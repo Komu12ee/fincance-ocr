@@ -33,6 +33,18 @@ class DiagnosticsTests(unittest.TestCase):
                        "user:password", "private", "SECRETIMAGE"):
             self.assertNotIn(secret, result)
 
+    def test_both_vm_repository_names_are_allowed_but_other_destinations_fail(self):
+        for name in ("fincance-ocr", "finance-ocr"):
+            for prefix in ("https://github.com/", "git@github.com:", "git@github-finance-ocr:"):
+                with self.subTest(name=name, prefix=prefix):
+                    self.assertEqual(diagnostics.github_repository(f"{prefix}Komu12ee/{name}.git"),
+                                     f"Komu12ee/{name}")
+        for remote in ("https://example.com/Komu12ee/finance-ocr.git",
+                       "git@github.com:other/finance-ocr.git",
+                       "git@github.com:Komu12ee/unrelated.git"):
+            with self.subTest(remote=remote), self.assertRaises(ValueError):
+                diagnostics.github_repository(remote)
+
     def test_collection_excludes_ocr_transcripts_env_and_unknown_fields(self):
         (self.repo / "core").mkdir()
         (self.repo / "core" / ".env").write_text("OTHER_SECRET=DO_NOT_UPLOAD")
@@ -88,7 +100,7 @@ class DiagnosticsTests(unittest.TestCase):
         def fake_git(repo, *args):
             calls.append((repo, args))
             if args == ("remote", "get-url", "origin"):
-                return "git@github-finance-ocr:Komu12ee/fincance-ocr.git"
+                return "git@github-finance-ocr:Komu12ee/finance-ocr.git"
             if args[:1] == ("config",) and len(args) == 2:
                 return "test-user"
             if args[:1] == ("add",):
@@ -97,7 +109,9 @@ class DiagnosticsTests(unittest.TestCase):
             return ""
 
         with patch.object(diagnostics, "git", side_effect=fake_git):
-            diagnostics.push_report(self.repo, report, "fg-ocr-diagnostics-test")
+            url = diagnostics.push_report(self.repo, report, "fg-ocr-diagnostics-test")
+        self.assertEqual(url, "https://github.com/Komu12ee/finance-ocr/blob/"
+                             "fg-ocr-diagnostics-test/diagnostics/fg-vm-example.json")
         for repo, args in calls:
             if args[0] in ("add", "checkout", "push", "fetch", "init", "-c"):
                 self.assertNotEqual(repo, self.repo)

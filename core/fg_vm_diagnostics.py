@@ -144,15 +144,22 @@ def collect(repo: Path, source: Path, output: Path, probe: bool) -> dict:
     return redact(report, repo, (os.getenv("GPU_OCR_API_KEY", ""),))
 
 
-def push_report(repo: Path, report: Path, branch: str) -> None:
-    """Commit only the report in an isolated checkout; leave the VM branch alone."""
-    remote = git(repo, "remote", "get-url", "origin")
+def github_repository(remote: str) -> str:
+    """Recognize the two FG repository names used by the processing VMs."""
     allowed = re.fullmatch(
         r"(?:https://github\.com/|git@(?:github\.com|github-finance-ocr):)"
-        r"Komu12ee/fincance-ocr(?:\.git)?", remote, flags=re.IGNORECASE,
+        r"(?P<repository>Komu12ee/(?:fincance-ocr|finance-ocr))(?:\.git)?",
+        remote, flags=re.IGNORECASE,
     )
     if not allowed:
-        raise ValueError("origin must be the approved Komu12ee/fincance-ocr GitHub repository")
+        raise ValueError("origin must be the approved Komu12ee/fincance-ocr or Komu12ee/finance-ocr GitHub repository")
+    return allowed.group("repository")
+
+
+def push_report(repo: Path, report: Path, branch: str) -> str:
+    """Commit only the report in an isolated checkout; leave the VM branch alone."""
+    remote = git(repo, "remote", "get-url", "origin")
+    repository = github_repository(remote)
     identity = {}
     for name, fallback in (("name", "FG OCR Diagnostics"),
                            ("email", "fg-ocr-diagnostics@users.noreply.github.com")):
@@ -176,6 +183,7 @@ def push_report(repo: Path, report: Path, branch: str) -> None:
         git(checkout, "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
             "commit", "--quiet", "-m", "Add sanitized FG VM OCR diagnostics")
         git(checkout, "push", "origin", f"HEAD:refs/heads/{branch}")
+    return f"https://github.com/{repository}/blob/{branch}/diagnostics/{report.name}"
 
 
 def main(argv=None) -> int:
@@ -200,9 +208,9 @@ def main(argv=None) -> int:
         print(f"Sanitized report saved: {report}")
         if args.push:
             branch = f"fg-ocr-diagnostics-{suffix}"
-            push_report(PROJECT, report, branch)
+            url = push_report(PROJECT, report, branch)
             print(f"Uploaded report branch: {branch}")
-            print(f"https://github.com/Komu12ee/fincance-ocr/blob/{branch}/diagnostics/{report.name}")
+            print(url)
             print("Send this branch name or link in the chat so it can be fetched and inspected.")
         else:
             print("Nothing uploaded. Add --push to upload a new report.")

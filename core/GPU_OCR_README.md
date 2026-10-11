@@ -268,6 +268,9 @@ branch using an isolated temporary Git checkout. Your current VM branch,
 staged changes and `main` are untouched. GitHub authentication uses the same
 `origin` URL and SSH configuration as your existing repository; write access
 is required. No force push is used. If upload fails, the local report remains.
+Both `Komu12ee/fincance-ocr` and `Komu12ee/finance-ocr` are accepted, through
+HTTPS or the `github-finance-ocr` SSH alias. Report links use the actual remote
+repository name. Other repository destinations are rejected.
 The script prints the uploaded branch name and link. Share that link in chat
 so the report can be fetched and inspected.
 
