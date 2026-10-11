@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CHiPS-RAG  •  Document Assistant</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ══ LOGIN SCREEN ════════════════════════════════════════════ -->
+  <div id="login-screen">
+    <div id="login-card">
+      <div class="login-brand">
+        <span class="login-brand-mark">◈</span>
+        <div>
+          <div class="login-brand-name">CHiPS-RAG</div>
+          <div class="login-brand-sub">Document Assistant</div>
+        </div>
+      </div>
+
+      <form id="login-form" autocomplete="off" novalidate>
+        <div class="login-field">
+          <label for="login-username">Username</label>
+          <input id="login-username" type="text"
+                 placeholder="Enter username"
+                 autocomplete="username"
+                 spellcheck="false" />
+        </div>
+        <div class="login-field">
+          <label for="login-password">Password</label>
+          <input id="login-password" type="password"
+                 placeholder="Enter password"
+                 autocomplete="current-password" />
+        </div>
+
+        <div id="login-error" class="login-error hidden"></div>
+
+        <button id="login-submit" type="submit">
+          <span id="login-btn-text">Sign In</span>
+          <span id="login-btn-spinner" class="hidden">
+            <span class="thinking-dot"></span>
+            <span class="thinking-dot"></span>
+            <span class="thinking-dot"></span>
+          </span>
+        </button>
+      </form>
+
+      <div class="login-footer">
+        Government of Chhattisgarh &nbsp;·&nbsp; Restricted Access
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ APP SHELL (hidden until logged in) ══════════════════════ -->
+  <div id="app-shell" class="hidden">
+
+    <!-- ── Sidebar ─────────────────────────────────────────────── -->
+    <aside id="sidebar">
+      <div class="brand">
+        <span class="brand-mark">◈</span>
+        <div>
+          <div class="brand-name">CHiPS-RAG</div>
+          <div class="brand-sub">Document Assistant</div>
+        </div>
+      </div>
+
+      <!-- User info + logout -->
+      <div class="user-bar">
+        <span class="user-icon">⬡</span>
+        <span id="user-display" class="user-name">—</span>
+        <button id="btn-logout" title="Sign out">↩</button>
+      </div>
+
+      <!-- Status panel -->
+      <section class="sidebar-section">
+        <div class="section-label">SYSTEM STATUS</div>
+        <div class="status-grid">
+          <div class="status-row" id="st-pipeline">
+            <span class="status-dot" data-state="idle"></span>
+            <span class="status-label">Pipeline</span>
+            <span class="status-val" id="st-pipeline-val">—</span>
+          </div>
+          <div class="status-row" id="st-db">
+            <span class="status-dot" data-state="idle"></span>
+            <span class="status-label">Qdrant DB</span>
+            <span class="status-val" id="st-db-val">—</span>
+          </div>
+          <div class="status-row" id="st-docs">
+            <span class="status-dot" data-state="idle"></span>
+            <span class="status-label">Documents</span>
+            <span class="status-val" id="st-docs-val">—</span>
+          </div>
+        </div>
+        <button class="btn-init" id="btn-init">Initialise Pipeline</button>
+      </section>
+
+      <!-- Settings panel -->
+      <section class="sidebar-section">
+        <div class="section-label">RETRIEVAL SETTINGS</div>
+        <label class="field-label" for="num-results">
+          Context chunks &nbsp;<span id="num-results-display">3</span>
+        </label>
+        <input type="range" id="num-results" min="1" max="10" value="3" />
+
+        <label class="field-label toggle-row" for="kg-toggle">
+          Knowledge Graph
+          <span class="toggle-wrap">
+            <input type="checkbox" id="kg-toggle" checked />
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </span>
+        </label>
+      </section>
+
+      <!-- Examples -->
+      <section class="sidebar-section flex-grow">
+        <div class="section-label">EXAMPLE QUERIES</div>
+        <ul class="example-list" id="example-list">
+          <li class="example-skeleton"></li>
+          <li class="example-skeleton"></li>
+          <li class="example-skeleton"></li>
+        </ul>
+      </section>
+
+      <footer class="sidebar-footer">
+        <span id="footer-time">—</span>
+      </footer>
+    </aside>
+
+    <!-- ── Main area ───────────────────────────────────────────── -->
+    <main id="main">
+
+      <!-- Chat pane -->
+      <div id="chat-pane">
+        <div id="chat-empty" class="chat-empty">
+          <div class="empty-icon">⬡</div>
+          <p>Initialise the pipeline, then ask a question about your documents.</p>
+        </div>
+        <div id="chat-messages"></div>
+      </div>
+
+      <!-- Query bar -->
+      <div id="query-bar">
+        <div id="query-wrap">
+          <textarea
+            id="query-input"
+            rows="1"
+            placeholder="Ask a question about the documents…"
+            spellcheck="false"
+          ></textarea>
+          <button id="btn-send" disabled title="Send query">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2.2"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+          </button>
+        </div>
+        <div id="query-meta">
+          <span id="query-status">Pipeline not initialised</span>
+          <span id="query-timing"></span>
+        </div>
+      </div>
+
+    </main>
+
+  </div><!-- /#app-shell -->
+
+  <!-- ── Source drawer (slides in from right) ──────────────────── -->
+  <div id="drawer-overlay" class="hidden"></div>
+  <aside id="source-drawer" class="hidden">
+    <div class="drawer-header">
+      <span class="section-label">SOURCE CHUNKS</span>
+      <button id="drawer-close" aria-label="Close">✕</button>
+    </div>
+    <div id="drawer-body"></div>
+  </aside>
+
+  <!-- ── Toast ─────────────────────────────────────────────────── -->
+  <div id="toast-container" aria-live="polite"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

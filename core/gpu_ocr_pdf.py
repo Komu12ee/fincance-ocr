@@ -1,0 +1,476 @@
+#!/usr/bin/env python3
+"""Recursively OCR PDFs with a remote vision API and create searchable PDFs.
+
+PDF operations stay on the main thread: PyMuPDF is not thread safe. Only remote
+HTTP inference runs concurrently. Originals are never modified.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+from concurrent.futures import ThreadPoolExecutor
+import hashlib
+import html
+import json
+import logging
+import math
+import os
+from pathlib import Path
+import re
+import sys
+import tempfile
+import time
+from urllib.parse import quote
+
+import pymupdf as fitz
+import requests
+from dotenv import load_dotenv
+
+LOG = logging.getLogger("gpu_ocr")
+PROJECT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT / "core" / "01_preprocessing"))
+from stage1_image_prep.pdf_to_image import render_pdf_page
+from stage2_ocr.models import (
+    BoundingBox, DocumentElement, DocumentOCRResult, ElementType, PageOCRResult,
+)
+DEFAULT_PROMPT = """Perform OCR on this document page. Transcribe ALL visible text,
+including headers, footers, tables, stamps and handwritten text when readable.
+Preserve the original language, especially Hindi (Devanagari) and English.
+Do not translate, summarize, explain, or invent missing text.
+Return ONLY a JSON object in this form:
+{"blank": false, "lines": [{"text": "one line of text", "bbox": [x1,y1,x2,y2]}]}
+List lines in reading order. Coordinates must be normalized to 0..1000, with
+origin at the top left of the supplied image. Each bbox encloses its line.
+For tables, transcribe each cell separately, in row order, with its own bbox.
+For a truly blank page return {"blank": true, "lines": []}.
+If JSON coordinates are unsupported, return only the complete transcription.
+"""
+CACHE_VERSION = 2
+
+
+def atomic_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=".ocr-", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False)
+        os.replace(name, path)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
+def discover_pdfs(root: Path, output: Path):
+    """Include mixed-case extensions, exclude output subtrees and symlinks."""
+    for folder, dirs, names in os.walk(root, followlinks=False):
+        dirs[:] = sorted(
+            d for d in dirs
+            if not (Path(folder) / d).is_symlink()
+            and (Path(folder) / d).resolve() != output
+        )
+        for name in sorted(names):
+            path = Path(folder) / name
+            if path.suffix.lower() == ".pdf" and not path.is_symlink():
+                yield path
+
+
+def approximate_lines(text: str) -> dict:
+    """Text-only models cannot provide accurate selection/highlight geometry."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        raise ValueError("Empty OCR response; refusing to mark this page complete")
+    step = 920 / len(lines)
+    return {
+        "blank": False,
+        "positioning": "approximate",
+        "lines": [
+            {"text": line, "bbox": [40, 40 + i * step, 960, 40 + (i + 1) * step]}
+            for i, line in enumerate(lines)
+        ],
+    }
+
+
+def parse_ocr(text: str) -> dict:
+    text = text.strip()
+    if text.startswith("```") and text.endswith("```"):
+        text = re.sub(r"^```[^\n]*\n", "", text)
+        text = re.sub(r"\n?```$", "", text).strip()
+    if not text:
+        raise ValueError("The OCR model returned no text")
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        # A malformed/truncated JSON response must not become searchable JSON.
+        if text.startswith(("{", "[")):
+            raise ValueError("Invalid OCR JSON; try --prompt-file with a text-only prompt")
+        return approximate_lines(text)
+    if isinstance(value, str):
+        return approximate_lines(value)
+    if not isinstance(value, dict):
+        raise ValueError("OCR JSON must be an object containing lines")
+    lines = value.get("lines")
+    if not isinstance(lines, list):
+        if isinstance(value.get("text"), str):
+            return approximate_lines(value["text"])
+        raise ValueError("OCR JSON is missing the lines array")
+    if not lines:
+        if value.get("blank") is True:
+            return {"blank": True, "positioning": "model", "lines": []}
+        raise ValueError("No OCR lines and page was not explicitly marked blank")
+    if value.get("blank") is True:
+        raise ValueError("OCR response marks a page blank but also contains text")
+    clean = []
+    missing_boxes = False
+    for line in lines:
+        if not isinstance(line, dict) or not isinstance(line.get("text"), str):
+            raise ValueError("Each OCR line must have a text string")
+        if not line["text"].strip():
+            continue
+        box = line.get("bbox")
+        if box is None:
+            missing_boxes = True
+        else:
+            if not isinstance(box, list) or len(box) != 4:
+                raise ValueError("Each bbox must contain four normalized coordinates")
+            if not all(isinstance(n, (float, int)) and not isinstance(n, bool)
+                       and math.isfinite(n) for n in box):
+                raise ValueError("Invalid bbox coordinates")
+            if not (0 <= box[0] < box[2] <= 1000 and 0 <= box[1] < box[3] <= 1000):
+                raise ValueError("bbox coordinates must be ordered and within 0..1000")
+        clean.append({"text": line["text"].strip(), "bbox": box})
+    if not clean:
+        raise ValueError("OCR returned only whitespace")
+    if missing_boxes:
+        return approximate_lines("\n".join(line["text"] for line in clean))
+    return {"blank": False, "positioning": "model", "lines": clean}
+
+
+class GPUClient:
+    def __init__(self, args, prompt: str):
+        self.url = args.base_url.rstrip("/")
+        self.model = args.model
+        self.timeout = args.timeout
+        self.retries = args.retries
+        self.max_tokens = args.max_tokens
+        self.prompt = prompt
+        key = os.environ.get("GPU_OCR_API_KEY")
+        self.headers = {"Authorization": f"Bearer {key}"} if key else {}
+
+    def check(self) -> None:
+        response = requests.get(f"{self.url}/models", headers=self.headers, timeout=(10, 30))
+        response.raise_for_status()
+        models = [item.get("id") for item in response.json().get("data", [])]
+        if self.model not in models:
+            raise ValueError(f"Model {self.model!r} is unavailable; server models: {models}")
+        LOG.info("GPU endpoint ready: %s (model=%s)", self.url, self.model)
+
+    def ocr(self, image: bytes) -> dict:
+        payload = {
+            "model": self.model,
+            "temperature": 0,
+            "max_tokens": self.max_tokens,
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": self.prompt},
+                {"type": "image_url", "image_url": {
+                    "url": "data:image/png;base64," + base64.b64encode(image).decode("ascii")
+                }},
+            ]}],
+        }
+        for attempt in range(self.retries + 1):
+            try:
+                response = requests.post(
+                    f"{self.url}/chat/completions", headers=self.headers,
+                    json=payload, timeout=(10, self.timeout),
+                )
+                response.raise_for_status()
+                choices = response.json().get("choices", [])
+                if not choices:
+                    raise ValueError("GPU response contains no completion choices")
+                choice = choices[0]
+                reason = choice.get("finish_reason")
+                if reason and reason != "stop":
+                    raise ValueError(
+                        f"Incomplete OCR (finish_reason={reason}); for length, raise --max-tokens"
+                    )
+                content = choice.get("message", {}).get("content")
+                if isinstance(content, list):
+                    content = "\n".join(
+                        item.get("text", "") for item in content if isinstance(item, dict)
+                    )
+                if not isinstance(content, str):
+                    raise ValueError("GPU response has no text content")
+                return parse_ocr(content)
+            except requests.HTTPError as error:
+                if error.response.status_code not in (408, 429, 500, 502, 503, 504):
+                    raise
+                last_error = error
+            except (requests.ConnectionError, requests.Timeout, ValueError) as error:
+                last_error = error
+            if attempt < self.retries:
+                delay = min(30, 2 ** (attempt + 1))
+                LOG.warning("OCR request failed (%s); retry in %ss", last_error, delay)
+                time.sleep(delay)
+        raise RuntimeError(f"OCR failed after {self.retries + 1} attempts: {last_error}")
+
+
+def page_result(ocr: dict, number: int, width: int, height: int) -> PageOCRResult:
+    """Adapt GPU lines to the existing Stage 2 pixel-coordinate data models."""
+    elements = []
+    for line in ocr["lines"]:
+        x1, y1, x2, y2 = line["bbox"]
+        elements.append(DocumentElement(
+            element_type=ElementType.PARAGRAPH, text=line["text"], page_num=number,
+            bbox=BoundingBox(x=x1 * width / 1000, y=y1 * height / 1000,
+                             w=(x2 - x1) * width / 1000, h=(y2 - y1) * height / 1000),
+        ))
+    return PageOCRResult(page_num=number, elements=elements,
+                         raw_text="\n".join(line["text"] for line in ocr["lines"]))
+
+
+def add_text_layer(page, result: PageOCRResult, image_width: int, image_height: int) -> None:
+    """Unicode text with font fallback, invisible PDF text rendering mode 3."""
+    font = fitz.Font("helv")
+    writer = fitz.TextWriter(page.rect)
+    for element in result.elements:
+        # Embedded newlines are placed individually within the model's box.
+        parts = element.text.splitlines()
+        box = element.bbox
+        x = box.x * page.rect.width / image_width
+        y = box.y * page.rect.height / image_height
+        width = box.w * page.rect.width / image_width
+        height = box.h * page.rect.height / image_height / len(parts)
+        for index, text in enumerate(parts):
+            if not text.strip():
+                continue
+            size = min(12, height / 1.7, width / max(font.text_length(text, fontsize=1), 1))
+            writer.append((x, y + index * height + size * 1.1), text, font=font, fontsize=size)
+    if result.elements:
+        writer.write_text(page, render_mode=3)
+
+
+def signature(source: Path, relative: Path, args, prompt: str) -> dict:
+    stat = source.stat()
+    return {
+        "version": CACHE_VERSION, "source": relative.as_posix(),
+        "source_size": stat.st_size, "source_mtime_ns": stat.st_mtime_ns,
+        "base_url": args.base_url.rstrip("/"), "model": args.model,
+        "dpi": args.dpi, "max_pixels": args.max_pixels, "max_tokens": args.max_tokens,
+        "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+    }
+
+
+def read_json(path: Path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def output_stat(path: Path) -> dict:
+    stat = path.stat()
+    return {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def process_pdf(source: Path, relative: Path, output: Path, cache: Path,
+                client: GPUClient, pool: ThreadPoolExecutor, args, prompt: str) -> str:
+    destination = output / relative
+    json_output = destination.with_name(destination.name + ".ocr.json")
+    md_output = destination.with_name(destination.name + ".ocr.md")
+    sig = signature(source, relative, args, prompt)
+    completed = read_json(cache / "completed.json")
+    if not args.force and destination.is_file() and completed and completed.get("signature") == sig:
+        if (completed.get("output") == output_stat(destination)
+                and json_output.is_file() and md_output.is_file()):
+            return "skipped"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    cache.mkdir(parents=True, exist_ok=True)
+    page_cache_valid = not args.force and read_json(cache / "source.json") == sig
+    # Invalidate page records before attempting a different source/configuration.
+    if not page_cache_valid:
+        for old in cache.glob("page-*.json"):
+            old.unlink()
+        atomic_json(cache / "source.json", sig)
+    fd, temporary = tempfile.mkstemp(prefix=".ocr-", suffix=".pdf", dir=destination.parent)
+    os.close(fd)
+    titles = []
+    try:
+        with fitz.open(source) as original, fitz.open() as result:
+            if original.needs_pass:
+                raise ValueError("Encrypted PDF requires a password; unlock a copy before OCR")
+            if not original.page_count:
+                raise ValueError("PDF has no pages")
+            structured = DocumentOCRResult(source_pdf=str(source), total_pages=original.page_count)
+            # Render and publish pages in order; retain at most --workers page images.
+            for start in range(0, original.page_count, args.workers):
+                batch = []
+                for number in range(start, min(start + args.workers, original.page_count)):
+                    page = original[number]
+                    pixmap = render_pdf_page(page, args.dpi, args.max_pixels)
+                    image = pixmap.tobytes("png")
+                    width, height = pixmap.width, pixmap.height
+                    del pixmap
+                    record = cache / f"page-{number + 1:06d}.json"
+                    saved = read_json(record) if page_cache_valid else None
+                    if saved is not None:
+                        # Validate cached OCR rather than trusting arbitrary JSON.
+                        try:
+                            checked = parse_ocr(json.dumps(saved, ensure_ascii=False))
+                            checked["positioning"] = saved.get("positioning", checked["positioning"])
+                            saved = checked
+                        except (ValueError, AttributeError):
+                            saved = None
+                    future = None if saved is not None else pool.submit(client.ocr, image)
+                    batch.append((number, image, width, height, record, saved, future))
+                for number, image, width, height, record, saved, future in batch:
+                    ocr = saved if saved is not None else future.result()
+                    if saved is None:
+                        atomic_json(record, ocr)
+                    if ocr["positioning"] == "approximate":
+                        LOG.warning("%s page %s: model supplied no boxes; approximate highlights", relative, number + 1)
+                    target = result.new_page(width=original[number].rect.width,
+                                             height=original[number].rect.height)
+                    target.insert_image(target.rect, stream=image)
+                    structured_page = page_result(ocr, number, width, height)
+                    structured.pages.append(structured_page)
+                    add_text_layer(target, structured_page, width, height)
+                    # Check Unicode round-trip: fail instead of publishing corrupt text.
+                    expected = structured_page.raw_text
+                    extracted = target.get_text()
+                    normalize = lambda s: "".join(s.split())
+                    if normalize(expected) != normalize(extracted):
+                        raise ValueError(f"Text-layer verification failed on page {number + 1}")
+                    heading = ocr["lines"][0]["text"][:70] if ocr["lines"] else "Blank page"
+                    titles.append(f"Page {number + 1} - {heading}")
+                    LOG.info("%s: page %s/%s%s", relative, number + 1, original.page_count,
+                             " (cached)" if saved is not None else "")
+            result.set_metadata(original.metadata)
+            toc = original.get_toc(simple=True)
+            if toc:
+                toc.append([1, "OCR page navigation", 1])
+            level = 2 if toc else 1
+            toc.extend([level, title, number + 1] for number, title in enumerate(titles))
+            result.set_toc(toc)
+            result.set_pagemode("UseOutlines")
+            labels = original.get_page_labels()
+            if labels:
+                result.set_page_labels(labels)
+            result.subset_fonts()
+            result.save(temporary, garbage=4, deflate=True)
+            with fitz.open(temporary) as check:
+                if check.page_count != original.page_count:
+                    raise ValueError("Output page count differs from the original")
+        # Avoid publishing results if a scraper updated the input during OCR.
+        if signature(source, relative, args, prompt) != sig:
+            raise ValueError("Input PDF changed during OCR; rerun to process the new version")
+        atomic_json(json_output, structured.to_dict())
+        md_output.write_text(structured.to_markdown(), encoding="utf-8")
+        os.replace(temporary, destination)
+        atomic_json(cache / "completed.json", {"signature": sig, "output": output_stat(destination)})
+        return "processed"
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def write_index(output: Path) -> None:
+    links = []
+    for path in discover_pdfs(output, output / ".ocr-cache"):
+        if path.name.startswith(".ocr-"):
+            continue
+        relative = path.relative_to(output).as_posix()
+        links.append(f'<li><a href="{quote(relative)}">{html.escape(relative)}</a></li>')
+    content = (
+        '<!doctype html><html lang="en"><meta charset="utf-8">'
+        '<title>Searchable OCR PDFs</title>'
+        '<style>body{font:16px system-ui;max-width:1100px;margin:40px auto;padding:0 20px}'
+        'li{margin:10px 0}input{padding:10px;width:90%}</style>'
+        '<h1>Searchable OCR PDFs</h1>'
+        f'<p>{len(links)} PDFs. Open a PDF and use Ctrl+F to search its text. '
+        'Use its bookmarks to navigate pages.</p>'
+        '<input type="search" placeholder="Filter file paths" aria-label="Filter file paths">'
+        '<ul>' + "\n".join(links) + '</ul>'
+        '<script>document.querySelector("input").addEventListener("input",e=>{'
+        'const q=e.target.value.toLowerCase();document.querySelectorAll("li").forEach('
+        'li=>li.hidden=!li.textContent.toLowerCase().includes(q))})</script></html>'
+    )
+    (output / "index.html").write_text(content, encoding="utf-8")
+
+
+def main(argv=None) -> int:
+    # Load only the FG OCR client's explicit core/.env, preserving shell overrides.
+    load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("input", nargs="?", type=Path, default=PROJECT / "finance_cg_data")
+    parser.add_argument("-o", "--output", type=Path, help="Default: INPUT_NAME_ocr beside input")
+    parser.add_argument("--base-url", default=os.getenv("GPU_OCR_BASE_URL", "http://127.0.0.1:8000/v1"))
+    parser.add_argument("--model", default=os.getenv("GPU_OCR_MODEL", "ocr-primary"))
+    parser.add_argument("--workers", type=int, default=2, help="Concurrent GPU requests (default: 2)")
+    parser.add_argument("--dpi", type=int, default=200)
+    parser.add_argument("--max-pixels", type=int, default=6_000_000, help="Maximum rendered pixels per page")
+    parser.add_argument("--max-tokens", type=int, default=8192)
+    parser.add_argument("--timeout", type=float, default=180, help="Per-request read timeout in seconds")
+    parser.add_argument("--retries", type=int, default=2)
+    parser.add_argument("--limit", type=int, default=0, help="Limit discovered PDFs; 0 = all")
+    parser.add_argument("--force", action="store_true", help="Ignore caches and rebuild outputs")
+    parser.add_argument("--dry-run", action="store_true", help="List PDFs without contacting the GPU")
+    parser.add_argument("--prompt-file", type=Path, help="UTF-8 OCR prompt override for your vision model")
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if min(args.workers, args.dpi, args.max_pixels, args.max_tokens, args.timeout) <= 0:
+        parser.error("workers, dpi, max-pixels, max-tokens and timeout must be positive")
+    if min(args.limit, args.retries) < 0:
+        parser.error("limit and retries cannot be negative")
+    source = args.input.resolve()
+    output = (args.output or source.with_name(source.name + "_ocr")).resolve()
+    if not source.is_dir():
+        parser.error(f"Input directory does not exist: {source}")
+    if output == source or source.is_relative_to(output):
+        parser.error("Output must be a separate directory, not the input or its ancestor")
+    paths = list(discover_pdfs(source, output))
+    LOG.info("Found %s PDFs recursively in %s", len(paths), source)
+    if args.limit:
+        paths = paths[:args.limit]
+    if args.dry_run:
+        for path in paths:
+            print(path.relative_to(source))
+        return 0
+    if not paths:
+        return 0
+    prompt = args.prompt_file.read_text(encoding="utf-8") if args.prompt_file else DEFAULT_PROMPT
+    if not prompt.strip():
+        parser.error("OCR prompt cannot be empty")
+    client = GPUClient(args, prompt)
+    try:
+        client.check()
+    except (requests.RequestException, ValueError) as error:
+        LOG.error("GPU endpoint check failed: %s. Start the SSH tunnel on THIS processing VM.", error)
+        return 2
+    output.mkdir(parents=True, exist_ok=True)
+    counts = {"processed": 0, "skipped": 0, "failed": 0}
+    try:
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            for position, path in enumerate(paths, 1):
+                relative = path.relative_to(source)
+                digest = hashlib.sha256(relative.as_posix().encode("utf-8")).hexdigest()
+                cache = output / ".ocr-cache" / digest
+                LOG.info("PDF %s/%s: %s", position, len(paths), relative)
+                try:
+                    status = process_pdf(path, relative, output, cache, client, pool, args, prompt)
+                    counts[status] += 1
+                    LOG.info("%s: %s", status, relative)
+                except Exception as error:
+                    counts["failed"] += 1
+                    LOG.error("Failed %s: %s", relative, error)
+                    with (output / "errors.jsonl").open("a", encoding="utf-8") as stream:
+                        stream.write(json.dumps({"file": relative.as_posix(), "error": str(error)},
+                                                ensure_ascii=False) + "\n")
+    except KeyboardInterrupt:
+        LOG.warning("Interrupted; completed pages are cached. Run the same command to resume.")
+        return 130
+    finally:
+        write_index(output)
+    LOG.info("Finished: %s. Navigation index: %s", counts, output / "index.html")
+    return 1 if counts["failed"] else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Chhattisgarh Infotech Promotion Society">
+  <circle cx="32" cy="32" r="30" fill="#eef3f8" stroke="#1c3d5c" stroke-width="1.5"/>
+  <circle cx="32" cy="32" r="25.5" fill="none" stroke="#1c3d5c" stroke-width="0.75" opacity="0.55"/>
+  <!-- microchip: die + pins -->
+  <rect x="22" y="22" width="20" height="20" rx="2.5" fill="none" stroke="#1c3d5c" stroke-width="2"/>
+  <rect x="28.5" y="28.5" width="7" height="7" rx="1" fill="#1c3d5c"/>
+  <g stroke="#1c3d5c" stroke-width="2" stroke-linecap="round">
+    <path d="M26 22v-5"/><path d="M32 22v-5"/><path d="M38 22v-5"/>
+    <path d="M26 42v5"/><path d="M32 42v5"/><path d="M38 42v5"/>
+    <path d="M22 26h-5"/><path d="M22 32h-5"/><path d="M22 38h-5"/>
+    <path d="M42 26h5"/><path d="M42 32h5"/><path d="M42 38h5"/>
+  </g>
+</svg>

@@ -1,0 +1,103 @@
+{
+    "description": "CHiPPY Configuration Example - Load with: python stage.py --config config.example.json",
+    "base_dir": null,
+    "stages": {
+        "preprocessing": {
+            "enabled": true,
+            "input_dir": "01_preprocessing/input_pdfs",
+            "output_dir": "01_preprocessing/stage1_output",
+            "settings": {
+                "dpi": 150,
+                "denoise_strength": 1.5,
+                "enable_deskew": true,
+                "enable_stamp_detection": false,
+                "ocr_backend": "tesseract",
+                "language": "eng",
+                "confidence_threshold": 0.5,
+                "num_workers": 2,
+                "batch_size": 10
+            }
+        },
+        "optimization": {
+            "enabled": true,
+            "input_dir": "01_preprocessing/stage2_output",
+            "output_dir": "02_optimization/output",
+            "settings": {
+                "normalize_whitespace": true,
+                "fix_encoding": true,
+                "remove_artifacts": true
+            }
+        },
+        "chunking": {
+            "enabled": true,
+            "input_dir": "02_optimization/output",
+            "output_dir": "03_chunking/output",
+            "settings": {
+                "model": "BAAI/bge-m3",
+                "max_tokens": 1024,
+                "merge_peers": true,
+                "input_pattern": "*.md",
+                "file_mapping": null
+            }
+        },
+        "embeddings": {
+            "enabled": true,
+            "input_dir": "04_embeddings_and_kg/data",
+            "output_dir": "04_embeddings_and_kg/db",
+            "settings": {
+                "embedding_model": "BAAI/bge-base-en-v1.5",
+                "embedding_dim": 768,
+                "batch_size": 32,
+                "num_workers": 4,
+                "use_gpu": false,
+                "device": "cpu",
+                "vector_db_host": "localhost",
+                "vector_db_port": 6333,
+                "vector_db_collection": "chippy",
+                "kg_enable": true,
+                "kg_min_confidence": 0.5,
+                "ollama_api_url": "http://localhost:11434",
+                "ollama_model": "mistral"
+            }
+        },
+        "webui": {
+            "enabled": true,
+            "input_dir": "04_embeddings_and_kg/db",
+            "output_dir": "05_webui/results",
+            "settings": {
+                "host": "0.0.0.0",
+                "port": 5000,
+                "debug": true,
+                "secret_key": "dev-secret-key",
+                "session_timeout": 3600,
+                "max_upload_size_mb": 50
+            }
+        }
+    },
+    "performance": {
+        "num_workers": 4,
+        "cache_enabled": true,
+        "cache_size_mb": 1024,
+        "max_memory_mb": 4096,
+        "enable_profiling": false
+    },
+    "features": {
+        "kg_building": true,
+        "hybrid_search": true,
+        "ollama_integration": true,
+        "reranking": true,
+        "caching": true
+    },
+    "logging": {
+        "level": "INFO",
+        "format": "%(asctime)s - %(levelname)-7s - %(message)s",
+        "log_file": "logs/chippy.log",
+        "enable_file_logging": true
+    },
+    "examples": {
+        "load_config": "from config_manager import Config; config = Config.load_from_file('config.example.json')",
+        "use_in_script": "config = Config(stage='chunking'); input_path = config.get_input_path()",
+        "override_path": "config = Config(stage='chunking', input_dir='/custom/path'); config.create_directories()",
+        "environment_vars": "Set CHIPPY_BASE_DIR to override base directory detection"
+    }
+}

@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script>window.__APP_BASE__=(location.pathname.match(/^\/pipeline\/[^/]+/)||[''])[0];</script>
+  <title>Accounts</title>
+  <meta name="page-name" content="Accounts" />
+  <link rel="icon" href="img/emblem-gad.svg" data-brand-favicon />
+  <link rel="stylesheet" href="design-system.css" />
+  <style>
+    /* Tokens & base come from the shared design system (design-system.css). */
+    * { box-sizing:border-box; margin:0; }
+    body { font-family:var(--font); background:var(--canvas); color:var(--text); min-height:100vh; font-size:14px; -webkit-font-smoothing:antialiased; }
+    header { display:flex; align-items:center; justify-content:space-between;
+             padding:11px 20px; background:var(--bg); border-bottom:1px solid var(--border); }
+    .brand { display:flex; align-items:center; gap:9px; }
+    .brand img { width:30px; height:30px; object-fit:contain; }
+    .brand b { font-weight:600; font-size:15px; }
+    .brand span { font-size:12px; color:var(--text-3); }
+    header a { color:var(--navy); text-decoration:none; font-weight:500; font-size:13px; }
+    header a:hover { text-decoration:underline; }
+    .wrap { max-width:860px; margin:26px auto; padding:0 20px; display:flex; flex-direction:column; gap:22px; }
+    .panel { background:var(--bg); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); }
+    .panel h2 { font-size:14px; font-weight:600; padding:14px 18px; border-bottom:1px solid var(--border); }
+    .form { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; align-items:end; padding:18px; }
+    .form .full { grid-column:1 / -1; display:flex; justify-content:flex-end; }
+    .field label { display:block; font-size:11.5px; color:var(--text-2); margin-bottom:5px; font-weight:500; }
+    .field input, .field select { width:100%; padding:9px 11px; border:1px solid var(--border); border-radius:var(--radius);
+             background:var(--bg); color:var(--text); font-size:13.5px; font-family:var(--font); outline:none; }
+    .field input:focus, .field select:focus { border-color:var(--navy); box-shadow:0 0 0 3px var(--navy-tint); }
+    button.primary { padding:11px 18px; border:0; border-radius:var(--radius);
+             background:linear-gradient(180deg, var(--blue-2) 0%, var(--blue) 100%); color:#fff;
+             font-weight:600; font-size:13.5px; cursor:pointer;
+             box-shadow:0 1px 2px rgba(23,58,94,.24), 0 5px 12px -6px rgba(61,120,180,.5);
+             transition:filter .16s var(--ease), box-shadow .16s var(--ease); }
+    button.primary:hover { filter:brightness(1.07); }
+    button.primary:disabled { opacity:.6; cursor:default; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { text-align:left; padding:11px 18px; border-bottom:1px solid var(--border); font-size:13.5px; }
+    th { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--text-3); font-weight:600; }
+    tr:last-child td { border-bottom:0; }
+    .role { display:inline-block; font-size:11px; font-weight:600; padding:2px 9px; border-radius:3px; }
+    .role.admin { background:var(--navy-tint); color:var(--navy); }
+    .role.user { background:var(--raised); color:var(--text-2); }
+    .row-actions { display:flex; gap:8px; }
+    button.mini { padding:5px 10px; border:1px solid var(--border); background:var(--bg); color:var(--text-2);
+             border-radius:var(--radius); font-size:12.5px; cursor:pointer; }
+    button.mini:hover { border-color:var(--navy-border); color:var(--navy); }
+    button.mini.danger { color:var(--red); }
+    button.mini.danger:hover { border-color:#f0cfca; background:var(--red-bg); }
+    .note { padding:12px 18px; font-size:12.5px; color:var(--text-3); }
+    #toast { position:fixed; bottom:22px; left:50%; transform:translateX(-50%);
+             background:var(--bg); border:1px solid var(--border); padding:11px 18px; border-radius:var(--radius);
+             font-size:13px; box-shadow:var(--shadow); opacity:0; transition:opacity .2s; pointer-events:none; }
+    #toast.show { opacity:1; }
+    @media (max-width:640px){ .form { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <a class="brand" href="./" title="Go to home" aria-label="Home">
+      <img src="img/emblem-gad.svg" alt="" data-brand-logo />
+      <b data-brand-name>GAD</b><span>Accounts</span>
+    </a>
+    <div><a href="./">← Chat</a> &nbsp;·&nbsp; <a href="documents.html">Documents</a></div>
+  </header>
+
+  <div class="wrap">
+    <div class="panel">
+      <h2>Create account</h2>
+      <div class="form">
+        <div class="field">
+          <label for="new-username">Username</label>
+          <input id="new-username" type="text" placeholder="e.g. j.sharma" spellcheck="false" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="new-password">Temporary password</label>
+          <input id="new-password" type="text" placeholder="min 8 characters" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="new-role">Role</label>
+          <select id="new-role">
+            <option value="user">User — chatbot only</option>
+            <option value="admin">Admin — full access</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="new-email">Email <span style="color:var(--text-3)">(optional)</span></label>
+          <input id="new-email" type="email" placeholder="name@dept.cg.gov.in" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="new-mobile">Mobile <span style="color:var(--text-3)">(optional)</span></label>
+          <input id="new-mobile" type="text" inputmode="numeric" placeholder="10-digit number" autocomplete="off" />
+        </div>
+        <div class="full"><button class="primary" id="create-btn">Create account</button></div>
+      </div>
+      <div class="note">Email / mobile enable OTP sign-in and password reset for that account.
+        Admins can verify &amp; fix document uploads; users can only use the chatbot.</div>
+    </div>
+
+    <div class="panel">
+      <h2>Accounts</h2>
+      <table>
+        <thead><tr><th>Username</th><th>Role</th><th>Email</th><th>Mobile</th><th>Created</th><th>Actions</th></tr></thead>
+        <tbody id="user-rows"><tr><td colspan="4" class="note">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+  <script src="branding.js"></script>
+  <script src="gad-admin.js"></script>
+</body>
+</html>

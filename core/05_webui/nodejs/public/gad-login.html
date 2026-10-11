@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script>window.__APP_BASE__=(location.pathname.match(/^\/pipeline\/[^/]+/)||[''])[0];</script>
+  <!-- This login page is shared by every bot; branding.js swaps the emblem, name and
+       title for whichever bot is serving it (via /api/branding). The values below are
+       neutral fallbacks shown only for the instant before that runs. -->
+  <title>Sign in</title>
+  <meta name="page-name" content="Sign in" />
+  <link rel="icon" href="img/cg-emblem.png" data-brand-favicon />
+  <link rel="stylesheet" href="design-system.css" />
+  <style>
+    /* Tokens & base come from the shared design system (design-system.css). */
+    * { box-sizing:border-box; margin:0; }
+    body {
+      min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px;
+      font-family:var(--font); color:var(--text); -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+      background:
+        radial-gradient(1100px 560px at 50% -25%, #d3e2f2 0%, rgba(211,226,242,0) 60%),
+        var(--canvas);
+    }
+    body::before {
+      content:""; position:fixed; inset:0; pointer-events:none; opacity:.5;
+      background-image:radial-gradient(rgba(23,58,94,.045) 1px, transparent 1px); background-size:22px 22px;
+    }
+    .card {
+      position:relative; width:100%; max-width:400px; background:var(--bg); border:1px solid var(--border);
+      border-radius:var(--r); padding:34px 32px 26px; box-shadow:var(--shadow-card); overflow:hidden;
+      animation:rise .4s var(--ease) both;
+    }
+    @keyframes rise { from{opacity:0; transform:translateY(10px)} to{opacity:1; transform:none} }
+    .card::before {
+      content:""; position:absolute; top:0; left:0; right:0; height:4px;
+      background:linear-gradient(90deg, var(--navy) 0%, var(--blue) 55%, #6aa4d8 100%);
+    }
+    .brand { display:flex; align-items:center; gap:13px; margin-bottom:22px; }
+    .brand img {
+      width:46px; height:46px; object-fit:contain; padding:5px; flex-shrink:0;
+      background:radial-gradient(circle at 50% 35%, #fff 0%, #f3f6fb 100%);
+      border:1px solid var(--navy-border); border-radius:50%; box-shadow:0 2px 6px rgba(15,41,66,.08);
+    }
+    .brand .name { font-size:16px; font-weight:700; letter-spacing:-.01em; }
+    .brand .sub { font-size:11px; color:var(--text-3); margin-top:3px; line-height:1.4; }
+    .tabs { display:flex; gap:4px; background:#eef2f7; border:1px solid var(--border); border-radius:var(--r-sm); padding:4px; margin-bottom:18px; }
+    .tab { flex:1; text-align:center; padding:9px; font-size:13px; font-weight:600; color:var(--text-2);
+           border-radius:var(--r-xs); cursor:pointer; border:0; background:transparent; transition:all .16s var(--ease); }
+    .tab.active { background:var(--bg); color:var(--blue); box-shadow:var(--shadow-sm); }
+    label { display:block; font-size:12.5px; font-weight:600; color:var(--text-2); margin:14px 0 7px; }
+    input, select { width:100%; padding:12px 13px; border-radius:var(--r-sm); border:1px solid var(--border);
+            background:#fdfefe; color:var(--text); font-size:14.5px; font-family:var(--font); outline:none;
+            transition:border-color .18s var(--ease), box-shadow .18s var(--ease), background .18s var(--ease); }
+    input:hover, select:hover { border-color:var(--navy-border); }
+    input:focus, select:focus { border-color:var(--blue); background:#fff; box-shadow:var(--ring); }
+    button.primary { width:100%; margin-top:22px; padding:13px; border:0; border-radius:var(--r-sm);
+             background:linear-gradient(180deg, var(--blue-2) 0%, var(--blue) 100%);
+             color:#fff; font-size:14.5px; font-weight:600; font-family:var(--font); cursor:pointer; letter-spacing:.01em;
+             box-shadow:0 1px 2px rgba(23,58,94,.28), 0 6px 16px -6px rgba(61,120,180,.5);
+             transition:filter .18s var(--ease), box-shadow .18s var(--ease), transform .12s var(--ease); }
+    button.primary:hover:not(:disabled) { filter:brightness(1.07); box-shadow:0 2px 4px rgba(23,58,94,.3), 0 10px 22px -6px rgba(61,120,180,.55); }
+    button.primary:active:not(:disabled) { transform:translateY(1px); }
+    button.primary:disabled { opacity:.6; cursor:default; }
+    .link { background:none; border:0; color:var(--blue); font-size:12.5px; font-weight:500; cursor:pointer; padding:0; margin-top:15px; font-family:var(--font); }
+    .link:hover { text-decoration:underline; }
+    .msg { margin-top:14px; font-size:12.5px; min-height:16px; font-weight:500; }
+    .msg.err { color:var(--red); }
+    .msg.ok { color:var(--green); }
+    .row { display:flex; gap:8px; align-items:flex-end; }
+    .row .grow { flex:1; }
+    .send-btn { padding:12px 14px; border:1px solid var(--navy-border); background:var(--navy-tint); color:var(--blue);
+             border-radius:var(--r-sm); font-size:12.5px; font-weight:600; cursor:pointer; white-space:nowrap;
+             transition:background .16s var(--ease), border-color .16s var(--ease); }
+    .send-btn:hover:not(:disabled) { background:#e0ebf7; border-color:var(--blue); }
+    .send-btn:disabled { opacity:.55; cursor:default; }
+    .hidden { display:none !important; }
+    .hint { font-size:11.5px; color:var(--text-3); margin-top:8px; }
+    .foot { margin-top:22px; padding-top:16px; border-top:1px solid var(--border-2); text-align:center; color:var(--text-3); font-size:11px; line-height:1.5; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="brand">
+      <img src="img/cg-emblem.png" alt="" data-brand-logo />
+      <div>
+        <div class="name" data-brand-label>Document Assistant</div>
+        <div class="sub" data-brand-org>Government of Chhattisgarh</div>
+      </div>
+    </div>
+
+    <div class="tabs" role="tablist">
+      <button class="tab active" id="tab-password" type="button">Password</button>
+      <button class="tab" id="tab-otp" type="button">OTP</button>
+    </div>
+
+    <!-- Shared identifier -->
+    <label for="identifier" id="identifier-label">Username, email, or mobile</label>
+    <input id="identifier" type="text" autocomplete="username" spellcheck="false" autofocus />
+
+    <!-- Password mode -->
+    <div id="mode-password">
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="current-password" />
+      <button class="primary" id="btn-password">Sign in</button>
+      <button class="link" id="link-forgot" type="button">Forgot password?</button>
+    </div>
+
+    <!-- OTP mode (login) & reset share the code UI -->
+    <div id="mode-otp" class="hidden">
+      <label for="channel">Send code via</label>
+      <div class="row">
+        <div class="grow"><select id="channel"><option value="email">Email</option><option value="sms">SMS</option></select></div>
+        <button class="send-btn" id="btn-send">Send code</button>
+      </div>
+      <div id="code-block" class="hidden">
+        <label for="code">Verification code</label>
+        <input id="code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" />
+        <div id="reset-fields" class="hidden">
+          <label for="new-password">New password</label>
+          <input id="new-password" type="password" autocomplete="new-password" placeholder="min 8 characters" />
+        </div>
+        <button class="primary" id="btn-verify">Sign in</button>
+      </div>
+      <button class="link" id="link-back" type="button">← Back to password sign-in</button>
+    </div>
+
+    <div class="msg" id="msg"></div>
+    <div class="foot">
+      Restricted to government staff ·
+      <a href="signup" style="color:var(--blue);font-weight:600;text-decoration:none">Create an account</a>
+    </div>
+  </div>
+
+  <script src="branding.js"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const msg = (text, kind = 'err') => { const m = $('msg'); m.textContent = text || ''; m.className = 'msg ' + (kind || ''); };
+    let mode = 'password';       // 'password' | 'otp' | 'reset'
+
+    const BASE = window.__APP_BASE__ || '';   // '/pipeline/<name>' behind the proxy
+    async function api(path, body) {
+      const res = await fetch(BASE + path, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin', body: JSON.stringify(body),
+      });
+      return { status: res.status, data: await res.json().catch(() => ({})) };
+    }
+
+    function showMode(next) {
+      mode = next;
+      $('mode-password').classList.toggle('hidden', next !== 'password');
+      $('mode-otp').classList.toggle('hidden', next === 'password');
+      $('tab-password').classList.toggle('active', next === 'password');
+      $('tab-otp').classList.toggle('active', next !== 'password');
+      $('code-block').classList.add('hidden');
+      $('reset-fields').classList.toggle('hidden', next !== 'reset');
+      $('btn-verify').textContent = next === 'reset' ? 'Reset password' : 'Sign in';
+      $('identifier-label').textContent = 'Username, email, or mobile';
+      msg('');
+    }
+
+    $('tab-password').onclick = () => showMode('password');
+    $('tab-otp').onclick = () => showMode('otp');
+    $('link-forgot').onclick = () => showMode('reset');
+    $('link-back').onclick = () => showMode('password');
+
+    // ── Password login ─────────────────────────────────────────────
+    $('btn-password').onclick = async () => {
+      const identifier = $('identifier').value.trim(), password = $('password').value;
+      if (!identifier || !password) return msg('Enter your credentials.');
+      $('btn-password').disabled = true; msg('Signing in…', '');
+      const { data } = await api('/gad-auth/login', { identifier, password });
+      $('btn-password').disabled = false;
+      if (data.success) window.location.href = `${BASE}/`;
+      else msg(data.error || 'Login failed.');
+    };
+
+    // ── Send OTP (login or reset) ──────────────────────────────────
+    $('btn-send').onclick = async () => {
+      const identifier = $('identifier').value.trim();
+      if (!identifier) return msg('Enter your username, email, or mobile.');
+      const channel = $('channel').value;
+      const purpose = mode === 'reset' ? 'reset' : 'login';
+      $('btn-send').disabled = true; msg('Sending code…', '');
+      const { data } = await api('/gad-auth/otp/request', { identifier, channel, purpose });
+      $('btn-send').disabled = false;
+      if (data.success) {
+        $('code-block').classList.remove('hidden');
+        $('code').focus();
+        const where = data.destination ? ` to ${data.destination}` : '';
+        msg(`Code sent${where}.` + (data.mock ? ' (dev: check server console)' : ''), 'ok');
+      } else {
+        msg(data.error || 'Could not send code.');
+      }
+    };
+
+    // ── Verify: OTP login or password reset ────────────────────────
+    $('btn-verify').onclick = async () => {
+      const identifier = $('identifier').value.trim(), code = $('code').value.trim();
+      if (!identifier || !code) return msg('Enter the code that was sent.');
+      $('btn-verify').disabled = true;
+      if (mode === 'reset') {
+        const new_password = $('new-password').value;
+        if (!new_password) { $('btn-verify').disabled = false; return msg('Enter a new password.'); }
+        msg('Resetting…', '');
+        const { data } = await api('/gad-auth/reset-password', { identifier, code, new_password });
+        $('btn-verify').disabled = false;
+        if (data.success) { msg('Password updated — signing in with your password now.', 'ok'); showMode('password'); $('password').focus(); }
+        else msg(data.error || 'Reset failed.');
+      } else {
+        msg('Signing in…', '');
+        const { data } = await api('/gad-auth/otp/login', { identifier, code });
+        $('btn-verify').disabled = false;
+        if (data.success) window.location.href = `${BASE}/`;
+        else msg(data.error || 'Invalid code.');
+      }
+    };
+
+    // Enter-to-submit on the active primary control
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      if (mode === 'password') $('btn-password').click();
+      else if (!$('code-block').classList.contains('hidden')) $('btn-verify').click();
+      else $('btn-send').click();
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script>window.__APP_BASE__=(location.pathname.match(/^\/pipeline\/[^/]+/)||[''])[0];</script>
+  <title>Documents</title>
+  <meta name="page-name" content="Documents" />
+  <link rel="icon" href="img/emblem-chips.svg" data-brand-favicon />
+  <link rel="stylesheet" href="design-system.css" />
+  <style>
+    /* Tokens & base come from the shared design system (design-system.css). */
+    * { box-sizing:border-box; margin:0; }
+    body { font-family:var(--font); background:var(--canvas); color:var(--text);
+           height:100vh; display:flex; flex-direction:column; font-size:14px; -webkit-font-smoothing:antialiased; }
+
+    /* Header */
+    header { display:flex; align-items:center; justify-content:space-between;
+             padding:11px 20px; background:var(--bg); border-bottom:1px solid var(--border); flex:none; }
+    .hleft { display:flex; align-items:center; gap:14px; }
+    .icon-btn { display:flex; align-items:center; justify-content:center; width:32px; height:32px;
+                border:1px solid var(--border); background:var(--bg); border-radius:var(--radius);
+                color:var(--text-2); cursor:pointer; transition:border-color .15s, color .15s, background .15s; }
+    .icon-btn:hover { border-color:var(--navy-border); color:var(--navy); background:var(--navy-tint); }
+    .brand { display:flex; align-items:center; gap:9px; }
+    .brand .gov-logo { width:30px; height:30px; flex:0 0 30px; object-fit:contain; display:block; }
+    .brand b { font-weight:600; font-size:15px; letter-spacing:.01em; }
+    .brand span { font-size:12px; color:var(--text-3); }
+    .top-right { display:flex; align-items:center; gap:16px; font-size:13px; }
+    .top-right label { color:var(--text-3); }
+    .top-right input { background:var(--bg); border:1px solid var(--border); color:var(--text);
+                       border-radius:var(--radius); padding:7px 10px; font-size:13px; width:150px; outline:none; }
+    .top-right input:focus { border-color:var(--navy); box-shadow:0 0 0 3px var(--navy-tint); }
+    .top-right a { color:var(--navy); text-decoration:none; font-weight:500; }
+    .top-right a:hover { text-decoration:underline; }
+
+    main { flex:1; display:flex; min-height:0; }
+
+    /* Sidebar / list */
+    .sidebar { width:320px; flex:none; border-right:1px solid var(--border); display:flex; flex-direction:column;
+               background:var(--bg); overflow:hidden; transition:width .2s ease; }
+    body.list-collapsed .sidebar { width:0; border-right:0; }
+    .upload { padding:16px; border-bottom:1px solid var(--border); }
+    .upload button { width:100%; padding:11px; border:0; border-radius:var(--radius);
+                     background:linear-gradient(180deg, var(--blue-2) 0%, var(--blue) 100%);
+                     color:#fff; font-weight:600; font-size:13.5px; cursor:pointer;
+                     box-shadow:0 1px 2px rgba(23,58,94,.24), 0 5px 12px -6px rgba(61,120,180,.5);
+                     transition:filter .16s var(--ease), box-shadow .16s var(--ease); }
+    .upload button:hover { filter:brightness(1.07); }
+    .upload .hint { color:var(--text-3); font-size:12px; margin-top:9px; text-align:center; }
+    /* ── Review tools (search / filter / progress) ── */
+    .list-tools { padding:12px 14px 6px; border-bottom:1px solid var(--border-2); display:flex; flex-direction:column; gap:10px; }
+    .search-wrap { position:relative; display:flex; align-items:center; }
+    .search-wrap svg { position:absolute; left:11px; width:15px; height:15px; color:var(--text-3); pointer-events:none; }
+    #doc-search { width:100%; padding:9px 11px 9px 32px; border:1px solid var(--border); border-radius:var(--radius-sm);
+                  background:var(--surface); color:var(--text); font-size:13px; outline:none;
+                  transition:border-color var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease); }
+    #doc-search:hover { border-color:var(--border-strong); }
+    #doc-search:focus { border-color:var(--primary); box-shadow:var(--ring); }
+    .filter-chips { display:flex; gap:5px; flex-wrap:wrap; }
+    .chip { padding:5px 11px; border:1px solid var(--border); background:var(--surface); color:var(--text-2);
+            border-radius:var(--radius-full); font-size:12px; font-weight:500; cursor:pointer;
+            transition:all var(--dur-2) var(--ease); }
+    .chip:hover { border-color:var(--accent-border); color:var(--accent-ink); }
+    .chip.active { background:var(--accent-ink); border-color:var(--accent-ink); color:#fff; }
+    .progress { display:flex; flex-direction:column; gap:5px; padding-top:2px; }
+    .progress-bar { height:6px; background:var(--surface-sunken); border-radius:var(--radius-full); overflow:hidden; }
+    .progress-bar span { display:block; height:100%; width:0; border-radius:var(--radius-full);
+                         background:linear-gradient(90deg, var(--green-500), #159c56); transition:width var(--dur-4) var(--ease); }
+    .progress-text { font-size:11.5px; color:var(--text-3); font-variant-numeric:tabular-nums; }
+    .list-empty { padding:24px 16px; text-align:center; color:var(--text-3); font-size:12.5px; line-height:1.5; }
+    .kbd-hint { font-size:11px; color:var(--text-3); display:flex; align-items:center; gap:4px; flex-wrap:wrap; }
+    .kbd-hint kbd { font-family:var(--mono); font-size:10px; background:var(--surface-sunken); border:1px solid var(--border);
+                    border-radius:4px; padding:1px 5px; color:var(--text-2); line-height:1.5; }
+    .bulk-btn { width:100%; padding:9px; border:0; border-radius:var(--radius-sm); color:#fff;
+                background:linear-gradient(180deg,#159c56 0%, var(--green-500) 100%);
+                font-size:12.5px; font-weight:600; cursor:pointer; box-shadow:0 1px 2px rgba(11,122,67,.3);
+                transition:filter var(--dur-2) var(--ease); }
+    .bulk-btn:hover:not(:disabled) { filter:brightness(1.06); }
+    .bulk-btn:disabled { opacity:.6; cursor:default; }
+    /* discard/reject action in the detail bar */
+    button.discard { background:var(--surface); border:1px solid var(--border); color:var(--text-2); }
+    button.discard:hover { border-color:var(--red-border); color:var(--red-500); background:var(--red-bg); }
+
+    .list { overflow-y:auto; flex:1; padding:8px; }
+    .group-label { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.05em;
+                   color:var(--text-3); padding:14px 8px 6px; }
+    .doc { padding:10px 12px; border-radius:var(--radius); cursor:pointer; border:1px solid transparent; margin-bottom:2px; }
+    .doc:hover { background:var(--raised); }
+    .doc.active { background:var(--navy-tint); border-color:var(--navy-border); }
+    .doc .name { font-size:13px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .doc .meta { font-size:11.5px; color:var(--text-3); margin-top:3px; }
+    .doc .meta.url { color:var(--navy); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .badge { display:inline-block; font-size:10.5px; font-weight:600; padding:2px 8px; border-radius:3px; margin-top:7px; }
+    .badge.processing { background:var(--raised); color:var(--text-2); }
+    .badge.pending    { background:var(--amber-bg); color:var(--amber); }
+    .badge.verified   { background:var(--green-bg); color:var(--green); }
+    .badge.indexing   { background:var(--navy-tint); color:var(--navy); }
+    .badge.error      { background:var(--red-bg); color:var(--red); }
+    /* Method badge sits beside the status badge on each row, so a reviewer can see
+       "Needs verification · Sarvam OCR" without opening the document. */
+    .badge.method     { margin-left:5px; font-weight:500; border:1px solid transparent; }
+    .badge.m-sarvam   { background:var(--navy-tint); color:var(--navy); border-color:var(--navy-border); }
+    .badge.m-ocr      { background:var(--raised); color:var(--text-2); }
+    .badge.m-extract  { background:transparent; color:var(--text-3); border-color:var(--border); }
+
+    /* ── Word review ──────────────────────────────────────────────────────── */
+    .pane-label { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .check-words {
+      font-size:11px; font-weight:600; padding:3px 10px; border-radius:999px; cursor:pointer;
+      border:1px solid var(--navy-border); background:var(--navy-tint); color:var(--navy);
+      font-family:inherit;
+    }
+    .check-words:hover:not(:disabled) { background:#e0ebf7; }
+    .check-words:disabled { opacity:.6; cursor:default; }
+
+    /* Read-only overlay mirroring the textarea, with suspect words marked. */
+    .md-review {
+      flex:1; overflow:auto; white-space:pre-wrap; word-break:break-word;
+      padding:12px 14px; border:1px solid var(--border); border-radius:var(--r-sm);
+      background:#fdfefe; font-family:var(--mono, ui-monospace, monospace); font-size:13px;
+      line-height:1.75; color:var(--text);
+    }
+    .md-review.hidden, #md-text.hidden { display:none !important; }
+    .md-review .empty { color:var(--text-3); }
+
+    /* Severity by cause: certain damage reads red, dictionary misses amber. */
+    mark.sus { border-radius:3px; padding:0 2px; cursor:pointer; background:var(--amber-bg); color:inherit;
+               border-bottom:2px solid var(--amber); }
+    mark.sus.broken_encoding,
+    mark.sus.orphan_matra { background:var(--red-bg); border-bottom-color:var(--red); }
+    mark.sus.nofix { border-bottom-style:dotted; }   /* nothing to suggest */
+    mark.sus:hover { filter:brightness(.96); }
+
+    .sus-pop {
+      position:absolute; z-index:60; min-width:220px; max-width:300px;
+      background:var(--bg); border:1px solid var(--border); border-radius:var(--r-sm);
+      box-shadow:var(--shadow-card); padding:9px; font-size:12px;
+    }
+    .sus-why { color:var(--text-3); font-size:11px; margin-bottom:7px; line-height:1.4; }
+    .sus-list { display:flex; flex-direction:column; gap:3px; }
+    .sus-opt {
+      display:flex; align-items:baseline; justify-content:space-between; gap:8px; width:100%;
+      text-align:left; padding:6px 8px; border:1px solid transparent; border-radius:var(--r-xs);
+      background:var(--raised); cursor:pointer; font-family:inherit; font-size:12.5px; color:var(--text);
+    }
+    .sus-opt:hover { background:var(--navy-tint); border-color:var(--navy-border); }
+    .sus-opt .t { font-weight:600; }
+    .sus-opt .d { font-size:10px; color:var(--text-3); white-space:nowrap; }
+    .sus-none { color:var(--text-3); font-size:11.5px; line-height:1.45; }
+    .sus-keep {
+      margin-top:7px; width:100%; padding:5px; font-size:11px; cursor:pointer; font-family:inherit;
+      border:1px solid var(--border); border-radius:var(--r-xs); background:transparent; color:var(--text-2);
+    }
+    .sus-keep:hover { background:var(--raised); }
+
+    /* Detail */
+    .detail { flex:1; display:flex; flex-direction:column; min-width:0; }
+    .placeholder { flex:1; display:flex; align-items:center; justify-content:center; color:var(--text-3); font-size:13.5px; }
+    .detail-bar { padding:13px 20px; border-bottom:1px solid var(--border); background:var(--bg);
+                  display:flex; align-items:center; justify-content:space-between; gap:12px; flex:none; }
+    .detail-bar .title-wrap { min-width:0; display:flex; flex-direction:column; gap:2px; }
+    .detail-bar .title { font-size:14px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .detail-bar .title-src { font-size:11.5px; color:var(--navy); text-decoration:none;
+                             overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:520px; }
+    .detail-bar .title-src:hover { text-decoration:underline; }
+    /* How-produced badge + re-process control */
+    .detail-bar .method-row { display:flex; align-items:center; gap:8px; margin-top:3px; flex-wrap:wrap; }
+    .detail-bar .method-badge { font-size:11px; color:var(--text-2); background:var(--raised);
+                                border:1px solid var(--border); border-radius:var(--radius); padding:2px 8px; white-space:nowrap; }
+    .detail-bar .reproc-sel { font-size:11.5px; padding:4px 6px; border-radius:var(--radius);
+                              border:1px solid var(--border); background:var(--bg); color:var(--text); max-width:230px; }
+    .detail-bar #btn-reprocess { padding:5px 10px; font-size:11.5px; }
+    .pane-label .src-url { color:var(--navy); text-decoration:none; font-weight:500; text-transform:none; letter-spacing:0; }
+    .pane-label .src-url:hover { text-decoration:underline; }
+    .no-raw { padding:22px 20px; color:var(--text-2); font-size:13px; line-height:1.6; background:var(--bg); flex:1; }
+    .no-raw a { color:var(--navy); }
+    .detail-bar .actions { display:flex; align-items:center; gap:12px; flex:none; }
+    .detail-bar .status-note { font-size:12px; color:var(--text-2); }
+    button.act { border:0; border-radius:var(--radius); padding:9px 16px; font-weight:600; cursor:pointer; font-size:13px; transition:filter .16s var(--ease), background .15s, border-color .15s; }
+    button.verify { background:linear-gradient(180deg,#159c56 0%, var(--green) 100%); color:#fff; box-shadow:0 1px 2px rgba(11,122,67,.3), 0 5px 12px -6px rgba(11,122,67,.5); }
+    button.verify:hover { filter:brightness(1.06); }
+    button.save { background:linear-gradient(180deg, var(--blue-2) 0%, var(--blue) 100%); color:#fff; box-shadow:0 1px 2px rgba(23,58,94,.24); }
+    button.save:hover { filter:brightness(1.07); }
+    button.save:disabled { background:var(--raised); color:var(--text-3); cursor:default; }
+    button.ghost { background:var(--bg); border:1px solid var(--border); color:var(--text-2); }
+    button.ghost:hover { border-color:var(--navy-border); color:var(--navy); }
+
+    .panes { flex:1; display:flex; min-height:0; }
+    .pane { flex:1; min-width:0; display:flex; flex-direction:column; }
+    .pane.pdf { border-right:1px solid var(--border); }
+    .pane-label { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.05em;
+                  color:var(--text-3); padding:9px 16px; background:var(--bg); border-bottom:1px solid var(--border); flex:none; }
+    .pane.pdf iframe { flex:1; border:0; width:100%; background:#f0f2f5; }
+    .pane.md textarea { flex:1; width:100%; resize:none; border:0; padding:18px 20px;
+                        background:var(--bg); color:var(--text); font-family:"SF Mono","Segoe UI Mono",Consolas,monospace;
+                        font-size:13px; line-height:1.7; outline:none; }
+    .err-box { margin:18px; padding:13px 15px; background:var(--red-bg); border:1px solid #f0cfca;
+               border-radius:var(--radius); color:var(--red); font-size:13px; white-space:pre-wrap; }
+
+    #toast { position:fixed; bottom:22px; left:50%; transform:translateX(-50%);
+             background:var(--bg); border:1px solid var(--border); padding:11px 18px; border-radius:var(--radius);
+             font-size:13px; box-shadow:var(--shadow); opacity:0; transition:opacity .2s; pointer-events:none; }
+    #toast.show { opacity:1; }
+
+    ::-webkit-scrollbar { width:8px; height:8px; }
+    ::-webkit-scrollbar-thumb { background:#dce0e6; border-radius:4px; border:2px solid var(--canvas); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="hleft">
+      <button id="toggle-list" class="icon-btn" title="Show / hide document list" aria-label="Toggle document list">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="9" y1="4" x2="9" y2="20"/></svg>
+      </button>
+      <a class="brand" href="./" title="Go to home" aria-label="Home">
+        <img class="gov-logo" src="img/cg-emblem.png" alt="Government of Chhattisgarh" />
+        <b data-brand-name>Document Assistant</b><span>Documents</span>
+      </a>
+    </div>
+    <div class="top-right">
+      <label for="reviewer">Reviewer</label>
+      <input id="reviewer" type="text" placeholder="your name" />
+      <a href="./">← Chat</a>
+    </div>
+  </header>
+
+  <main>
+    <aside class="sidebar">
+      <div class="upload">
+        <input id="file-input" type="file" accept="application/pdf,.md,.markdown,text/markdown" hidden />
+        <button id="upload-btn">Upload PDF / Markdown</button>
+        <div class="hint">PDF is OCR'd; Markdown is indexed as-is. Only verified documents enter the RAG.</div>
+      </div>
+
+      <!-- Review tools: search + status filter + progress (make 100s of docs usable) -->
+      <div class="list-tools">
+        <div class="search-wrap">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input id="doc-search" type="search" placeholder="Search name or URL…" autocomplete="off" spellcheck="false" aria-label="Search documents" />
+        </div>
+        <div class="filter-chips" id="filter-chips" role="tablist" aria-label="Filter by status">
+          <button class="chip active" type="button" data-filter="review" role="tab">To review</button>
+          <button class="chip" type="button" data-filter="all" role="tab">All</button>
+          <button class="chip" type="button" data-filter="verified" role="tab">Verified</button>
+          <button class="chip" type="button" data-filter="error" role="tab">Errors</button>
+          <!-- How the text was produced. Sarvam pages are the ones worth a second
+               look, so they get their own chip rather than hiding behind "All". -->
+          <button class="chip" type="button" data-filter="sarvam" role="tab"
+                  title="Documents where Sarvam OCR read at least one page">Sarvam OCR</button>
+          <button class="chip" type="button" data-filter="ocr" role="tab"
+                  title="Documents read by Docling / EasyOCR only">Local OCR</button>
+          <button class="chip" type="button" data-filter="extract" role="tab"
+                  title="Text taken directly from the PDF or web page — no OCR">Extracted text</button>
+        </div>
+        <div class="progress" id="progress" hidden>
+          <div class="progress-bar"><span id="progress-fill"></span></div>
+          <div class="progress-text" id="progress-text"></div>
+        </div>
+        <div class="kbd-hint"><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>↵</kbd> verify</div>
+        <button id="bulk-verify" class="bulk-btn" hidden></button>
+      </div>
+
+      <div class="list" id="list"></div>
+    </aside>
+
+    <section class="detail" id="detail">
+      <div class="placeholder">Select a document to review, or upload a new PDF.</div>
+    </section>
+  </main>
+
+  <div id="toast"></div>
+  <script src="branding.js"></script>
+  <script src="documents.js"></script>
+</body>
+</html>

@@ -1,0 +1,54 @@
+# Local environment settings; keep shareable examples.
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+
+# Python environments, caches and build output.
+.venv/
+.venv-*/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+/build/
+/dist/
+
+# Installed JavaScript dependencies.
+node_modules/
+
+# FG source documents and generated OCR artifacts.
+/finance_cg_data/
+/finance_cg_data.zip
+/finance_cg_data_ocr/
+/fg_gpu_ocr_bundle.zip
+.ocr-cache/
+*.pdf.ocr.json
+*.pdf.ocr.md
+*.PDF.ocr.json
+*.PDF.ocr.md
+errors.jsonl
+
+# Runtime data and temporary pipeline outputs.
+/data/
+/tmp/
+/output/
+stage1_output/
+stage2_output/
+
+# Logs and local editor / operating-system files.
+*.log
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
