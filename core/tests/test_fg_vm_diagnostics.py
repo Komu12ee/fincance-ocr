@@ -20,6 +20,10 @@ class DiagnosticsTests(unittest.TestCase):
         self.source.mkdir()
         self.output = self.repo / "finance_cg_data_ocr"
         self.output.mkdir()
+        self.real_snapshot = diagnostics.runtime_snapshot
+        snapshot = patch.object(diagnostics, "runtime_snapshot", return_value={"vllm_metrics": []})
+        self.mock_snapshot = snapshot.start()
+        self.addCleanup(snapshot.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -44,6 +48,67 @@ class DiagnosticsTests(unittest.TestCase):
                        "git@github.com:Komu12ee/unrelated.git"):
             with self.subTest(remote=remote), self.assertRaises(ValueError):
                 diagnostics.github_repository(remote)
+
+    def test_probe_matches_bundled_text_prompt_and_rejects_unknown_custom_prompt(self):
+        import hashlib
+        text = (diagnostics.PROJECT / "core" / "fg_ocr_prompt.txt").read_text(encoding="utf-8")
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        selected, info = diagnostics.select_prompt({"prompt_sha256": digest})
+        self.assertEqual(selected, text)
+        self.assertTrue(info["matches_last_run"])
+        self.assertEqual(info["source"], "bundled FG text prompt")
+        selected, info = diagnostics.select_prompt({"prompt_sha256": "unknown"})
+        self.assertIsNone(selected)
+        self.assertIn("--prompt-file", info["error"])
+        custom = self.repo / "custom.txt"
+        custom.write_text("Read the text")
+        selected, info = diagnostics.select_prompt({"prompt_sha256": "unknown"}, custom)
+        self.assertEqual(selected, "Read the text")
+        self.assertFalse(info["matches_last_run"])
+
+    def test_runtime_samples_keep_only_numeric_metrics_and_safe_labels(self):
+        client = MagicMock(url="http://127.0.0.1:8001/v1", headers={})
+        response = MagicMock()
+        response.text = '\n'.join([
+            'vllm:num_requests_waiting{model_name="ocr-primary",secret="PRIVATE"} 3.0',
+            'vllm:num_requests_running{model_name="ocr-primary"} 1.0',
+            'vllm:generation_tokens_total{model_name="ocr-primary"} 400.0',
+            'unrelated_metric{secret="PRIVATE"} 2',
+        ])
+        with patch.object(diagnostics.shutil, "which", return_value=None), \
+                patch.object(diagnostics.requests, "get", return_value=response) as get:
+            result = self.real_snapshot(client)
+        self.assertEqual(len(result["vllm_metrics"]), 3)
+        self.assertEqual(result["vllm_metrics"][0]["value"], 3)
+        self.assertNotIn("PRIVATE", json.dumps(result))
+        self.assertEqual(get.call_args.args[0], "http://127.0.0.1:8001/metrics")
+
+    def test_probe_uses_last_text_prompt_and_records_request_statistics(self):
+        import hashlib
+        text = (diagnostics.PROJECT / "core" / "fg_ocr_prompt.txt").read_text(encoding="utf-8")
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        (self.output / "ocr_status.json").write_text(json.dumps({"ocr_config": {"prompt_sha256": digest}}))
+        response = MagicMock()
+        response.json.return_value = {"data": [{"id": "ocr-primary"}]}
+
+        def fake_ocr(client, image, telemetry):
+            self.assertEqual(client.prompt, text)
+            telemetry.append({"elapsed_seconds": 15, "http_status": 200,
+                              "usage": {"completion_tokens": 500}, "finish_reason": "stop"})
+            return {"lines": [{"text": "PRIVATE OCR TEXT"}], "positioning": "approximate"}
+
+        with patch.object(diagnostics, "git", return_value="test-commit"), \
+                patch.object(diagnostics.requests, "get", return_value=response), \
+                patch.object(diagnostics.ocr, "discover_pdfs", return_value=[self.source / "scan.pdf"]), \
+                patch.object(diagnostics.ocr.fitz, "open"), \
+                patch.object(diagnostics.ocr, "render_pdf_page", return_value=MagicMock(width=400, height=600)), \
+                patch.object(diagnostics.ocr.GPUClient, "ocr", fake_ocr):
+            result = diagnostics.collect(self.repo, self.source, self.output, True)
+        self.assertTrue(result["prompt"]["matches_last_run"])
+        self.assertEqual(result["probe"]["requests"][0]["usage"]["completion_tokens"], 500)
+        self.assertEqual(result["probe"]["line_count"], 1)
+        self.assertEqual(len(result["runtime_samples"]), 2)
+        self.assertNotIn("PRIVATE", json.dumps(result))
 
     def test_collection_excludes_ocr_transcripts_env_and_unknown_fields(self):
         (self.repo / "core").mkdir()

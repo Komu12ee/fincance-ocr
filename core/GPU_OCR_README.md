@@ -259,9 +259,19 @@ OCR errors, status and model metadata. `--probe` sends the first PDF's first
 page to the configured GPU once with the last run's rendering/token settings
 (or defaults before the first run). It records the server's full rejection
 reason without uploading the page or resulting OCR text to GitHub. It uses
-the default OCR prompt; a job's custom `--prompt-file` is not reproduced.
+the prompt matching the last job's stored hash: the default JSON prompt or the
+bundled FG text prompt. For another custom prompt, pass the same `--prompt-file`;
+an unknown prompt hash skips the probe rather than claiming to reproduce it.
 Neither collection nor the probe changes existing OCR outputs or page caches.
-This probe can take up to 180 seconds of read time; keep the terminal open.
+The probe records rendering/request times, HTTP status, token usage and finish
+reason. It samples local `nvidia-smi` utilization/memory and the server's
+`/metrics` queue, running requests and token counters before, during and after
+the request, printing a waiting message every sampling cycle. The probe has a
+300-second read timeout. Keep the terminal open until it finishes. Without
+`--probe`, it takes one runtime snapshot and sends no OCR inference request.
+Missing metrics or `nvidia-smi` are reported and do not prevent report upload.
+Server metrics are shared across all clients, not attributable solely to FG;
+local GPU measurements describe the API GPU only when both are on this VM.
 
 `--push` commits only the generated report to a new `fg-ocr-diagnostics-*`
 branch using an isolated temporary Git checkout. Your current VM branch,
@@ -282,3 +292,9 @@ redacted. Run without `--push` to inspect a local report first, and omit
 reports under `diagnostics/fg-vm-*.json` are ignored by Git; only this script's
 explicit upload stages the single report. For a custom OCR output directory,
 pass the matching `-o /path/to/output`.
+
+The main OCR log also records each request's elapsed time, HTTP status, output
+token count and finish reason. These distinguish model generation from JSON
+parsing failures. vLLM's [metrics documentation](https://docs.vllm.ai/en/stable/design/metrics/)
+describes the queue and token counters. GPU memory allocation alone does not
+identify which client's request is executing.

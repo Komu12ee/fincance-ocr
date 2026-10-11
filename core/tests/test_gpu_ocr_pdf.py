@@ -90,8 +90,11 @@ class OCRIntegrationTests(unittest.TestCase):
                     content = "\n".join(line["text"] for line in LINES)
                 if owner.mode == "blank":
                     content = '{"blank": true, "lines": []}'
+                if owner.mode == "invalid_json":
+                    content = '{"lines": ['
                 reason = "length" if owner.calls == owner.fail_on else "stop"
-                self.respond({"choices": [{"message": {"content": content}, "finish_reason": reason}]})
+                self.respond({"choices": [{"message": {"content": content}, "finish_reason": reason}],
+                              "usage": {"prompt_tokens": 100, "completion_tokens": 42, "total_tokens": 142}})
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -129,6 +132,20 @@ class OCRIntegrationTests(unittest.TestCase):
         self.assertIn("param: max_tokens", error)
         self.assertIn("max_tokens=8192", error)
         self.assertIn(message, self.read_status()["last_error"])
+
+    def test_request_timing_and_tokens_survive_invalid_ocr_json(self):
+        from types import SimpleNamespace
+        self.mode = "invalid_json"
+        args = SimpleNamespace(base_url=self.base, model="ocr-primary", timeout=10, retries=0, max_tokens=8192)
+        stats = []
+        with self.assertRaisesRegex(RuntimeError, "Invalid OCR JSON"):
+            ocr.GPUClient(args, ocr.DEFAULT_PROMPT).ocr(b"\x89PNG\r\n\x1a\n", stats)
+        self.assertEqual(len(stats), 1)
+        self.assertEqual(stats[0]["http_status"], 200)
+        self.assertEqual(stats[0]["finish_reason"], "stop")
+        self.assertEqual(stats[0]["usage"]["completion_tokens"], 42)
+        self.assertGreaterEqual(stats[0]["elapsed_seconds"], 0)
+        self.assertNotIn("content", stats[0])
 
     def test_transient_http_error_still_retries_with_server_reason(self):
         make_pdf(self.source / "scan.pdf")

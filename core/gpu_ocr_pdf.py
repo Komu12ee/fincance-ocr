@@ -185,7 +185,7 @@ class GPUClient:
             raise ValueError(f"Model {self.model!r} is unavailable; server models: {models}")
         LOG.info("GPU endpoint ready: %s (model=%s)", self.url, self.model)
 
-    def ocr(self, image: bytes) -> dict:
+    def ocr(self, image: bytes, telemetry: list[dict] | None = None) -> dict:
         payload = {
             "model": self.model,
             "temperature": 0,
@@ -198,17 +198,29 @@ class GPUClient:
             ]}],
         }
         for attempt in range(self.retries + 1):
+            started = time.monotonic()
+            stats = {"attempt": attempt + 1}
             try:
                 response = requests.post(
                     f"{self.url}/chat/completions", headers=self.headers,
                     json=payload, timeout=(10, self.timeout),
                 )
+                stats["http_status"] = response.status_code
                 self.raise_for_status(response)
-                choices = response.json().get("choices", [])
+                body = response.json()
+                usage = body.get("usage") or {}
+                if not isinstance(usage, dict):
+                    usage = {}
+                stats["usage"] = {
+                    key: usage[key] for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                    if isinstance(usage.get(key), int) and usage[key] >= 0
+                }
+                choices = body.get("choices", [])
                 if not choices:
                     raise ValueError("GPU response contains no completion choices")
                 choice = choices[0]
                 reason = choice.get("finish_reason")
+                stats["finish_reason"] = reason
                 if reason and reason != "stop":
                     raise ValueError(
                         f"Incomplete OCR (finish_reason={reason}); for length, raise --max-tokens"
@@ -227,6 +239,14 @@ class GPUClient:
                 last_error = error
             except (requests.ConnectionError, requests.Timeout, ValueError) as error:
                 last_error = error
+            finally:
+                stats["elapsed_seconds"] = round(time.monotonic() - started, 3)
+                if telemetry is not None:
+                    telemetry.append(stats)
+                LOG.info("GPU OCR attempt %s: %.1fs | HTTP %s | output tokens %s | finish %s",
+                         attempt + 1, stats["elapsed_seconds"], stats.get("http_status", "no response"),
+                         stats.get("usage", {}).get("completion_tokens", "unknown"),
+                         stats.get("finish_reason", "unknown"))
             if attempt < self.retries:
                 delay = min(30, 2 ** (attempt + 1))
                 LOG.warning("OCR request failed (%s); retry in %ss", last_error, delay)
