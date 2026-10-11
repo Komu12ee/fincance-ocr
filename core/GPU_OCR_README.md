@@ -78,7 +78,8 @@ finance_cg_data/category/subfolder/report.pdf
   layers. This rasterizes vector content and annotations; interactive forms,
   original hyperlinks and digital signatures are not carried into the output.
 - Invisible Unicode OCR text: select/copy text or use your PDF viewer's Find
-  command (Ctrl+F). Hindi and English use PyMuPDF's font fallback.
+  command (Ctrl+F). Hindi uses PyMuPDF's bundled Devanagari font explicitly,
+  preserving sentence punctuation (`।`, `॥`); English uses Helvetica.
 - Original outline titles plus a bookmark for every page; page labels retained.
 - `finance_cg_data_ocr/index.html`: a browsable file index with path filtering.
   It filters filenames/paths; search document contents inside a PDF viewer.
@@ -87,11 +88,15 @@ finance_cg_data/category/subfolder/report.pdf
   Stage 2 structured results; JSON bounding boxes use rendered-image pixels.
 - `errors.jsonl`: appended failures; exit status 1 if any PDF failed, 2 if the
   GPU readiness check failed. A failed PDF is not published as a partial result.
+  Unicode text-layer failures also retain expected/extracted text in
+  `.ocr-cache/<document-hash>/text-layer-failure-000001.json` for diagnosis.
 
 Rerun the same command to resume. Unchanged completed PDFs are skipped; partial
 PDFs reuse successful page responses. Source size/mtime and model, prompt,
 rendering and token settings identify the cache. Use `--force` if inputs were
 changed while retaining their original size and timestamp, or to redo OCR.
+Text-layer writer upgrades rebuild PDFs using cached OCR without repeating GPU
+inference. After updating the code, rerun normally; `--force` is not necessary.
 Use a single process per output directory to avoid conflicting cache writes.
 
 To choose another output root:

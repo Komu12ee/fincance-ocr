@@ -17,7 +17,7 @@ from stage1_image_prep.pdf_to_image import pdf_page_to_image
 
 
 LINES = [
-    {"text": "हिन्दी वित्त विभाग Finance Department", "bbox": [80, 100, 920, 180]},
+    {"text": "हिन्दी वित्त विभाग। Finance Department ॥", "bbox": [80, 100, 920, 180]},
     {"text": "Order 123 / 2026", "bbox": [80, 220, 920, 300]},
 ]
 
@@ -181,6 +181,44 @@ class OCRIntegrationTests(unittest.TestCase):
         image = pdf_page_to_image(path, 0)
         self.assertEqual(image.shape[2], 3)
         self.assertGreater(image.shape[0], 480)  # Existing 450-DPI default.
+
+    def test_writer_upgrade_reuses_gpu_cache(self):
+        make_pdf(self.source / "scan.pdf")
+        self.assertEqual(self.run_ocr(), 0)
+        completed = next(self.output.rglob("completed.json"))
+        data = json.loads(completed.read_text(encoding="utf-8"))
+        data.pop("text_layer_version")  # Completion marker from the older writer.
+        completed.write_text(json.dumps(data), encoding="utf-8")
+        self.assertEqual(self.run_ocr(), 0)
+        self.assertEqual(self.calls, 1)
+        updated = json.loads(completed.read_text(encoding="utf-8"))
+        self.assertEqual(updated["text_layer_version"], ocr.TEXT_LAYER_VERSION)
+
+    def test_hindi_punctuation_search_after_save_and_subset(self):
+        text = "हिन्दी वित्त विभाग। स्वीकृत राशि ₹१२३॥ ॒॑॓॔"
+        data = {"lines": [{"text": text, "bbox": [20, 900, 980, 999]}]}
+        with fitz.open() as doc:
+            page = doc.new_page()
+            result = ocr.page_result(data, 0, 1000, 1000)
+            ocr.add_text_layer(page, result, 1000, 1000)
+            ocr.verify_text_layer(page, text, 0, self.root)
+            doc.subset_fonts()
+            encoded = doc.tobytes(garbage=4, deflate=True)
+        with fitz.open(stream=encoded, filetype="pdf") as saved:
+            self.assertEqual(saved[0].get_text().strip(), text)
+            self.assertTrue(saved[0].search_for("विभाग।"))
+            self.assertTrue(saved[0].search_for("१२३॥"))
+
+    def test_failed_text_verification_retains_diagnostics(self):
+        with fitz.open() as doc:
+            page = doc.new_page()
+            page.insert_text((30, 60), "actual")
+            with self.assertRaisesRegex(ValueError, "expected U\\+0065"):
+                ocr.verify_text_layer(page, "expected", 0, self.root)
+        diagnostic = self.root / "text-layer-failure-000001.json"
+        saved = json.loads(diagnostic.read_text(encoding="utf-8"))
+        self.assertEqual(saved["expected"], "expected")
+        self.assertEqual(saved["extracted"].strip(), "actual")
 
 
 class OCRResponseTests(unittest.TestCase):

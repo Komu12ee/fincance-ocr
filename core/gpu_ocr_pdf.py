@@ -47,6 +47,8 @@ For a truly blank page return {"blank": true, "lines": []}.
 If JSON coordinates are unsupported, return only the complete transcription.
 """
 CACHE_VERSION = 2
+# PDF writer fixes must rebuild outputs while retaining expensive GPU OCR pages.
+TEXT_LAYER_VERSION = 2
 
 
 def atomic_json(path: Path, value: object) -> None:
@@ -228,10 +230,17 @@ def page_result(ocr: dict, number: int, width: int, height: int) -> PageOCRResul
 
 
 def add_text_layer(page, result: PageOCRResult, image_width: int, image_height: int) -> None:
-    """Unicode text with font fallback, invisible PDF text rendering mode 3."""
-    font = fitz.Font("helv")
+    """Unicode text with explicit Hindi font, invisible PDF rendering mode 3.
+
+    Helvetica fallback chooses a missing glyph for common-script Devanagari
+    punctuation such as U+0964/U+0965 (danda), yielding NUL on extraction.
+    Selecting the bundled Devanagari font explicitly preserves those characters.
+    """
+    latin_font = fitz.Font("helv")
+    hindi_font = fitz.Font(script=getattr(fitz, "UCDN_SCRIPT_DEVANAGARI", 9))
     writer = fitz.TextWriter(page.rect)
     for element in result.elements:
+        font = hindi_font if any("\u0900" <= char <= "\u097f" for char in element.text) else latin_font
         # Embedded newlines are placed individually within the model's box.
         parts = element.text.splitlines()
         box = element.bbox
@@ -246,6 +255,29 @@ def add_text_layer(page, result: PageOCRResult, image_width: int, image_height: 
             writer.append((x, y + index * height + size * 1.1), text, font=font, fontsize=size)
     if result.elements:
         writer.write_text(page, render_mode=3)
+
+
+def verify_text_layer(page, expected: str, number: int, cache: Path) -> None:
+    """Require an exact Unicode round-trip, retaining diagnostics on failure."""
+    extracted = page.get_text()
+    wanted = "".join(expected.split())
+    actual = "".join(extracted.split())
+    diagnostic = cache / f"text-layer-failure-{number + 1:06d}.json"
+    if wanted == actual:
+        diagnostic.unlink(missing_ok=True)
+        return
+    position = next((i for i, pair in enumerate(zip(wanted, actual))
+                     if pair[0] != pair[1]), min(len(wanted), len(actual)))
+    codepoint = lambda s: f"U+{ord(s[position]):04X}" if position < len(s) else "end of text"
+    difference = f"character {position + 1}: expected {codepoint(wanted)}, extracted {codepoint(actual)}"
+    atomic_json(diagnostic, {
+        "page": number + 1, "difference": difference,
+        "expected": expected, "extracted": extracted,
+        "pymupdf_version": str(getattr(fitz, "__version__", fitz.VersionBind)),
+    })
+    raise ValueError(
+        f"Text-layer verification failed on page {number + 1} ({difference}); diagnostics: {diagnostic}"
+    )
 
 
 def signature(source: Path, relative: Path, args, prompt: str) -> dict:
@@ -279,7 +311,8 @@ def process_pdf(source: Path, relative: Path, output: Path, cache: Path,
     sig = signature(source, relative, args, prompt)
     completed = read_json(cache / "completed.json")
     if not args.force and destination.is_file() and completed and completed.get("signature") == sig:
-        if (completed.get("output") == output_stat(destination)
+        if (completed.get("text_layer_version") == TEXT_LAYER_VERSION
+                and completed.get("output") == output_stat(destination)
                 and json_output.is_file() and md_output.is_file()):
             return "skipped"
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -333,12 +366,7 @@ def process_pdf(source: Path, relative: Path, output: Path, cache: Path,
                     structured_page = page_result(ocr, number, width, height)
                     structured.pages.append(structured_page)
                     add_text_layer(target, structured_page, width, height)
-                    # Check Unicode round-trip: fail instead of publishing corrupt text.
-                    expected = structured_page.raw_text
-                    extracted = target.get_text()
-                    normalize = lambda s: "".join(s.split())
-                    if normalize(expected) != normalize(extracted):
-                        raise ValueError(f"Text-layer verification failed on page {number + 1}")
+                    verify_text_layer(target, structured_page.raw_text, number, cache)
                     heading = ocr["lines"][0]["text"][:70] if ocr["lines"] else "Blank page"
                     titles.append(f"Page {number + 1} - {heading}")
                     LOG.info("%s: page %s/%s%s", relative, number + 1, original.page_count,
@@ -365,7 +393,10 @@ def process_pdf(source: Path, relative: Path, output: Path, cache: Path,
         atomic_json(json_output, structured.to_dict())
         md_output.write_text(structured.to_markdown(), encoding="utf-8")
         os.replace(temporary, destination)
-        atomic_json(cache / "completed.json", {"signature": sig, "output": output_stat(destination)})
+        atomic_json(cache / "completed.json", {
+            "signature": sig, "output": output_stat(destination),
+            "text_layer_version": TEXT_LAYER_VERSION,
+        })
         return "processed"
     finally:
         Path(temporary).unlink(missing_ok=True)
