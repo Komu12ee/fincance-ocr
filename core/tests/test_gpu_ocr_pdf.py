@@ -51,15 +51,16 @@ class OCRIntegrationTests(unittest.TestCase):
         self.calls = 0
         self.fail_on = None
         self.mode = "json"
+        self.http_error = None
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):
                 pass
 
-            def respond(self, body):
+            def respond(self, body, status=200):
                 data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-                self.send_response(200)
+                self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
@@ -80,6 +81,10 @@ class OCRIntegrationTests(unittest.TestCase):
                 uri = payload["messages"][0]["content"][1]["image_url"]["url"]
                 owner.assertTrue(base64.b64decode(uri.split(",", 1)[1]).startswith(b"\x89PNG"))
                 owner.calls += 1
+                if owner.http_error:
+                    status, error = owner.http_error
+                    self.respond(error, status)
+                    return
                 content = json.dumps({"blank": False, "lines": LINES}, ensure_ascii=False)
                 if owner.mode == "text":
                     content = "\n".join(line["text"] for line in LINES)
@@ -109,6 +114,30 @@ class OCRIntegrationTests(unittest.TestCase):
 
     def read_status(self):
         return json.loads((self.output / "ocr_status.json").read_text(encoding="utf-8"))
+
+    def test_http_400_retains_server_reason_and_does_not_retry_or_publish(self):
+        make_pdf(self.source / "scan.pdf")
+        message = "Input has 10000 tokens and max_tokens=8192 exceeds max_model_len=16384"
+        self.http_error = (400, {"error": {"message": message, "type": "BadRequestError",
+                                          "param": "max_tokens", "code": 400}})
+        self.assertEqual(self.run_ocr("--retries", "2"), 1)
+        self.assertEqual(self.calls, 1)
+        self.assertFalse((self.output / "scan.pdf").exists())
+        error = json.loads((self.output / "errors.jsonl").read_text(encoding="utf-8"))["error"]
+        self.assertIn("HTTP 400", error)
+        self.assertIn(message, error)
+        self.assertIn("param: max_tokens", error)
+        self.assertIn("max_tokens=8192", error)
+        self.assertIn(message, self.read_status()["last_error"])
+
+    def test_transient_http_error_still_retries_with_server_reason(self):
+        make_pdf(self.source / "scan.pdf")
+        self.http_error = (503, {"error": {"message": "GPU temporarily unavailable"}})
+        with patch("gpu_ocr_pdf.time.sleep") as sleep:
+            self.assertEqual(self.run_ocr("--retries", "1"), 1)
+        self.assertEqual(self.calls, 2)
+        sleep.assert_called_once()
+        self.assertIn("GPU temporarily unavailable", self.read_status()["last_error"])
 
     def test_nested_names_unicode_bookmarks_structure_and_resume(self):
         first = self.source / "one" / "same.pdf"
@@ -321,6 +350,24 @@ class OCRIntegrationTests(unittest.TestCase):
 
 
 class OCRResponseTests(unittest.TestCase):
+    def test_plain_http_error_body_is_bounded_and_redacts_image_data_and_key(self):
+        import requests
+        from types import SimpleNamespace
+        args = SimpleNamespace(base_url="http://localhost/v1", model="ocr-primary",
+                               timeout=180, retries=0, max_tokens=4096)
+        response = requests.Response()
+        response.status_code = 400
+        response._content = b"Image disabled. secret-key data:image/png;base64,ABCDEF " + b"x" * 5000
+        with patch.dict("os.environ", {"GPU_OCR_API_KEY": "secret-key"}):
+            client = ocr.GPUClient(args, "OCR")
+            with self.assertRaises(requests.HTTPError) as caught:
+                client.raise_for_status(response)
+        self.assertIn("Image disabled", str(caught.exception))
+        self.assertNotIn("secret-key", str(caught.exception))
+        self.assertNotIn("ABCDEF", str(caught.exception))
+        self.assertLess(len(str(caught.exception)), 4200)
+        self.assertIs(caught.exception.response, response)
+
     def test_rejects_empty_truncated_and_invalid_geometry(self):
         for value in ("", '{"lines": []}', '{"lines": [', '{"lines":[{"text":"x","bbox":[0,0,1001,1]}]}'):
             with self.subTest(value=value), self.assertRaises(ValueError):

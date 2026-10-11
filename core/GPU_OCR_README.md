@@ -191,9 +191,35 @@ or plain text format.
 - Start with `--workers 1`; increase only if the GPU service supports parallel
   inference. Rendering/PDF writing stay serial; HTTP requests run concurrently.
 - Use `--dpi 300 --max-pixels 12000000` for small print, within server limits.
-- Use `--max-tokens 16384` for dense pages if the model context permits it.
+- Increase `--max-tokens` for dense pages only when the server context has room
+  for both the image/prompt tokens and the requested output. Requesting 16384
+  output tokens from a server with a 16384-token total context leaves no room
+  for input and can cause HTTP 400.
 - Use `--timeout 300` for slower inference.
 - Set `GPU_OCR_API_KEY` if the GPU service requires bearer authentication.
+
+### HTTP 400: inspect the server's reason
+
+The client prints the server's error message, type, parameter and code, and saves
+the same reason in `errors.jsonl` and the status tracker. HTTP 400 means the
+server rejected the request; an accessible `/v1/models` endpoint alone cannot
+establish why. The script does not retry identical HTTP 400 requests or switch
+OCR engines.
+
+For a first test with a smaller image and output budget:
+
+```bash
+python core/gpu_ocr_pdf.py finance_cg_data --limit 1 --workers 1 --dpi 150 --max-pixels 1500000 --max-tokens 4096
+```
+
+If the error names the context length, reduce the input image/output budget or
+increase the GPU server's configured context if resources permit. If it names
+disabled images, unsupported image input or a chat-template problem, fix that
+GPU server configuration; smaller images cannot enable vision support. Keep
+the complete server error when reporting a failure. Reduced image resolution
+can impair small-print OCR, and a `finish_reason=length` response still fails
+rather than publishing truncated text. Changed rendering/token settings use
+a different cache configuration; reuse the same settings when resuming.
 
 The code uses PyMuPDF's [invisible text rendering mode](https://pymupdf.readthedocs.io/en/latest/textwriter.html)
 for the searchable layer.

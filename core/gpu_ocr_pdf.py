@@ -151,9 +151,35 @@ class GPUClient:
         key = os.environ.get("GPU_OCR_API_KEY")
         self.headers = {"Authorization": f"Bearer {key}"} if key else {}
 
+    def raise_for_status(self, response: requests.Response) -> None:
+        """Keep the server's rejection reason, rather than just its HTTP code."""
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as error:
+            try:
+                body = response.json()
+            except ValueError:
+                body = response.text
+            detail = body.get("error", body) if isinstance(body, dict) else body
+            if isinstance(detail, dict):
+                # vLLM/OpenAI-compatible errors expose these fields without images.
+                detail = "; ".join(
+                    f"{name}: {detail[name]}" for name in ("message", "type", "param", "code")
+                    if detail.get(name) is not None
+                ) or json.dumps(detail, ensure_ascii=False)
+            detail = re.sub(r"data:image/[^\s\"']+", "[image data omitted]", str(detail))
+            key = os.environ.get("GPU_OCR_API_KEY")
+            if key:
+                detail = detail.replace(key, "[API key omitted]")
+            detail = " ".join(detail.split())[:4000] or "empty error response"
+            message = f"GPU API returned HTTP {response.status_code}: {detail}"
+            if response.status_code == 400:
+                message += f" (model={self.model}, max_tokens={self.max_tokens})"
+            raise requests.HTTPError(message, response=response, request=response.request) from error
+
     def check(self) -> None:
         response = requests.get(f"{self.url}/models", headers=self.headers, timeout=(10, 30))
-        response.raise_for_status()
+        self.raise_for_status(response)
         models = [item.get("id") for item in response.json().get("data", [])]
         if self.model not in models:
             raise ValueError(f"Model {self.model!r} is unavailable; server models: {models}")
@@ -177,7 +203,7 @@ class GPUClient:
                     f"{self.url}/chat/completions", headers=self.headers,
                     json=payload, timeout=(10, self.timeout),
                 )
-                response.raise_for_status()
+                self.raise_for_status(response)
                 choices = response.json().get("choices", [])
                 if not choices:
                     raise ValueError("GPU response contains no completion choices")
