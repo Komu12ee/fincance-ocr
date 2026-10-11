@@ -26,6 +26,10 @@ from urllib.parse import quote
 import pymupdf as fitz
 import requests
 from dotenv import load_dotenv
+from fg_ocr_status import (
+    OCRTracker, atomic_json, cache_directory, is_complete, output_stat, print_status,
+    read_json, source_signature, status_snapshot,
+)
 
 LOG = logging.getLogger("gpu_ocr")
 PROJECT = Path(__file__).resolve().parent.parent
@@ -49,17 +53,6 @@ If JSON coordinates are unsupported, return only the complete transcription.
 CACHE_VERSION = 2
 # PDF writer fixes must rebuild outputs while retaining expensive GPU OCR pages.
 TEXT_LAYER_VERSION = 2
-
-
-def atomic_json(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix=".ocr-", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump(value, stream, ensure_ascii=False)
-        os.replace(name, path)
-    finally:
-        Path(name).unlink(missing_ok=True)
 
 
 def discover_pdfs(root: Path, output: Path):
@@ -280,41 +273,28 @@ def verify_text_layer(page, expected: str, number: int, cache: Path) -> None:
     )
 
 
-def signature(source: Path, relative: Path, args, prompt: str) -> dict:
-    stat = source.stat()
+def ocr_config(args, prompt: str) -> dict:
     return {
-        "version": CACHE_VERSION, "source": relative.as_posix(),
-        "source_size": stat.st_size, "source_mtime_ns": stat.st_mtime_ns,
+        "version": CACHE_VERSION,
         "base_url": args.base_url.rstrip("/"), "model": args.model,
         "dpi": args.dpi, "max_pixels": args.max_pixels, "max_tokens": args.max_tokens,
         "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
     }
 
 
-def read_json(path: Path):
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-
-
-def output_stat(path: Path) -> dict:
-    stat = path.stat()
-    return {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+def signature(source: Path, relative: Path, args, prompt: str) -> dict:
+    return source_signature(source, relative, ocr_config(args, prompt))
 
 
 def process_pdf(source: Path, relative: Path, output: Path, cache: Path,
-                client: GPUClient, pool: ThreadPoolExecutor, args, prompt: str) -> str:
+                client: GPUClient, pool: ThreadPoolExecutor, args, prompt: str,
+                tracker: OCRTracker | None = None) -> str:
     destination = output / relative
     json_output = destination.with_name(destination.name + ".ocr.json")
     md_output = destination.with_name(destination.name + ".ocr.md")
     sig = signature(source, relative, args, prompt)
-    completed = read_json(cache / "completed.json")
-    if not args.force and destination.is_file() and completed and completed.get("signature") == sig:
-        if (completed.get("text_layer_version") == TEXT_LAYER_VERSION
-                and completed.get("output") == output_stat(destination)
-                and json_output.is_file() and md_output.is_file()):
-            return "skipped"
+    if not args.force and is_complete(source, relative, output, sig, TEXT_LAYER_VERSION):
+        return "skipped"
     destination.parent.mkdir(parents=True, exist_ok=True)
     cache.mkdir(parents=True, exist_ok=True)
     page_cache_valid = not args.force and read_json(cache / "source.json") == sig
@@ -355,6 +335,9 @@ def process_pdf(source: Path, relative: Path, output: Path, cache: Path,
                     future = None if saved is not None else pool.submit(client.ocr, image)
                     batch.append((number, image, width, height, record, saved, future))
                 for number, image, width, height, record, saved, future in batch:
+                    if tracker:
+                        tracker.page(number + 1, original.page_count,
+                                     "using cached OCR" if saved is not None else "waiting for GPU OCR")
                     ocr = saved if saved is not None else future.result()
                     if saved is None:
                         atomic_json(record, ocr)
@@ -367,6 +350,9 @@ def process_pdf(source: Path, relative: Path, output: Path, cache: Path,
                     structured.pages.append(structured_page)
                     add_text_layer(target, structured_page, width, height)
                     verify_text_layer(target, structured_page.raw_text, number, cache)
+                    if tracker:
+                        tracker.page(number + 1, original.page_count, "text layer verified",
+                                     verified=True, cached=saved is not None)
                     heading = ocr["lines"][0]["text"][:70] if ocr["lines"] else "Blank page"
                     titles.append(f"Page {number + 1} - {heading}")
                     LOG.info("%s: page %s/%s%s", relative, number + 1, original.page_count,
@@ -383,6 +369,8 @@ def process_pdf(source: Path, relative: Path, output: Path, cache: Path,
             if labels:
                 result.set_page_labels(labels)
             result.subset_fonts()
+            if tracker:
+                tracker.page(original.page_count, original.page_count, "saving searchable PDF")
             result.save(temporary, garbage=4, deflate=True)
             with fitz.open(temporary) as check:
                 if check.page_count != original.page_count:
@@ -444,12 +432,18 @@ def main(argv=None) -> int:
     parser.add_argument("--force", action="store_true", help="Ignore caches and rebuild outputs")
     parser.add_argument("--dry-run", action="store_true", help="List PDFs without contacting the GPU")
     parser.add_argument("--prompt-file", type=Path, help="UTF-8 OCR prompt override for your vision model")
+    status_options = parser.add_mutually_exclusive_group()
+    status_options.add_argument("--status", action="store_true", help="Count all PDFs and show FG OCR status without GPU requests")
+    status_options.add_argument("--watch", nargs="?", type=float, const=3,
+                                help="Watch FG status every N seconds (default: 3); no GPU requests")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if min(args.workers, args.dpi, args.max_pixels, args.max_tokens, args.timeout) <= 0:
         parser.error("workers, dpi, max-pixels, max-tokens and timeout must be positive")
     if min(args.limit, args.retries) < 0:
         parser.error("limit and retries cannot be negative")
+    if args.watch is not None and (not math.isfinite(args.watch) or args.watch < 1):
+        parser.error("watch interval must be at least one second")
     source = args.input.resolve()
     output = (args.output or source.with_name(source.name + "_ocr")).resolve()
     if not source.is_dir():
@@ -458,45 +452,76 @@ def main(argv=None) -> int:
         parser.error("Output must be a separate directory, not the input or its ancestor")
     paths = list(discover_pdfs(source, output))
     LOG.info("Found %s PDFs recursively in %s", len(paths), source)
+    if args.status or args.watch is not None:
+        # Existing tracking snapshots include the settings used by the last run.
+        config = ocr_config(args, DEFAULT_PROMPT)
+        try:
+            while True:
+                if args.watch is not None and sys.stdout.isatty() and os.getenv("TERM") != "dumb":
+                    print("\033[2J\033[H", end="")
+                print_status(status_snapshot(source, output, paths, config, TEXT_LAYER_VERSION))
+                if args.watch is None:
+                    return 0
+                time.sleep(args.watch)
+                paths = list(discover_pdfs(source, output))
+        except KeyboardInterrupt:
+            return 0
+    all_paths = paths
     if args.limit:
         paths = paths[:args.limit]
     if args.dry_run:
         for path in paths:
             print(path.relative_to(source))
         return 0
-    if not paths:
-        return 0
     prompt = args.prompt_file.read_text(encoding="utf-8") if args.prompt_file else DEFAULT_PROMPT
     if not prompt.strip():
         parser.error("OCR prompt cannot be empty")
+    tracker = OCRTracker(source, output, all_paths, ocr_config(args, prompt), TEXT_LAYER_VERSION, len(paths))
+    tracker.show()
+    if not paths:
+        tracker.finish_run("completed")
+        return 0
     client = GPUClient(args, prompt)
+    tracker.set_state("checking_gpu")
     try:
         client.check()
     except (requests.RequestException, ValueError) as error:
+        tracker.gpu("unavailable", str(error))
+        tracker.finish_run("gpu_unavailable")
         LOG.error("GPU endpoint check failed: %s. Start the SSH tunnel on THIS processing VM.", error)
         return 2
     output.mkdir(parents=True, exist_ok=True)
+    tracker.gpu("ready")
+    tracker.set_state("running")
     counts = {"processed": 0, "skipped": 0, "failed": 0}
     try:
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
             for position, path in enumerate(paths, 1):
                 relative = path.relative_to(source)
-                digest = hashlib.sha256(relative.as_posix().encode("utf-8")).hexdigest()
-                cache = output / ".ocr-cache" / digest
+                cache = cache_directory(output, relative)
                 LOG.info("PDF %s/%s: %s", position, len(paths), relative)
                 try:
-                    status = process_pdf(path, relative, output, cache, client, pool, args, prompt)
+                    tracker.begin(relative, position)
+                    status = process_pdf(path, relative, output, cache, client, pool, args, prompt, tracker)
                     counts[status] += 1
+                    tracker.finish_document(relative, status)
                     LOG.info("%s: %s", status, relative)
                 except Exception as error:
                     counts["failed"] += 1
+                    tracker.finish_document(relative, "failed", str(error))
                     LOG.error("Failed %s: %s", relative, error)
                     with (output / "errors.jsonl").open("a", encoding="utf-8") as stream:
                         stream.write(json.dumps({"file": relative.as_posix(), "error": str(error)},
                                                 ensure_ascii=False) + "\n")
     except KeyboardInterrupt:
+        tracker.finish_run("interrupted")
         LOG.warning("Interrupted; completed pages are cached. Run the same command to resume.")
         return 130
+    except Exception:
+        tracker.finish_run("stopped")
+        raise
+    else:
+        tracker.finish_run("completed_with_errors" if counts["failed"] else "completed")
     finally:
         write_index(output)
     LOG.info("Finished: %s. Navigation index: %s", counts, output / "index.html")

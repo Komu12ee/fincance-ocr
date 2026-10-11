@@ -1,14 +1,17 @@
 """Contract/integration checks using a fake vision API, never the real GPU."""
 
 import base64
+from contextlib import redirect_stdout
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import io
 from pathlib import Path
 import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import gpu_ocr_pdf as ocr
@@ -97,10 +100,15 @@ class OCRIntegrationTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def run_ocr(self, *extra):
-        return ocr.main([
-            str(self.source), "-o", str(self.output), "--base-url", self.base,
-            "--workers", "1", "--retries", "0", *extra,
-        ])
+        self.console = io.StringIO()
+        with redirect_stdout(self.console):
+            return ocr.main([
+                str(self.source), "-o", str(self.output), "--base-url", self.base,
+                "--workers", "1", "--retries", "0", *extra,
+            ])
+
+    def read_status(self):
+        return json.loads((self.output / "ocr_status.json").read_text(encoding="utf-8"))
 
     def test_nested_names_unicode_bookmarks_structure_and_resume(self):
         first = self.source / "one" / "same.pdf"
@@ -146,12 +154,18 @@ class OCRIntegrationTests(unittest.TestCase):
         make_pdf(self.source / "scan.pdf", 2)
         self.fail_on = 2
         self.assertEqual(self.run_ocr(), 1)
+        failed_status = self.read_status()
+        self.assertEqual(failed_status["counts"], {"total": 1, "done": 0, "failed": 1, "pending": 0})
+        self.assertEqual(failed_status["state"], "completed_with_errors")
+        self.assertIn("scan.pdf:", failed_status["last_error"])
         self.assertFalse((self.output / "scan.pdf").exists())
         self.assertTrue((self.output / "errors.jsonl").is_file())
         self.assertEqual(len(list(self.output.rglob("page-*.json"))), 1)
         self.fail_on = None
         self.assertEqual(self.run_ocr(), 0)
         self.assertEqual(self.calls, 3)  # Only the failed page needed a new request.
+        self.assertEqual(self.read_status()["counts"], {"total": 1, "done": 1, "failed": 0, "pending": 0})
+        self.assertEqual(self.read_status()["run"]["pages_cached"], 1)
 
     def test_text_only_and_blank_page_models(self):
         make_pdf(self.source / "scan.pdf")
@@ -219,6 +233,91 @@ class OCRIntegrationTests(unittest.TestCase):
         saved = json.loads(diagnostic.read_text(encoding="utf-8"))
         self.assertEqual(saved["expected"], "expected")
         self.assertEqual(saved["extracted"].strip(), "actual")
+
+    def test_tracker_counts_full_corpus_with_limit_and_status_is_read_only(self):
+        make_pdf(self.source / "one" / "same.pdf", 2)
+        make_pdf(self.source / "two" / "same.PdF")
+        self.assertEqual(self.run_ocr("--limit", "1"), 0)
+        status = self.read_status()
+        self.assertEqual(status["counts"], {"total": 2, "done": 1, "failed": 0, "pending": 1})
+        self.assertEqual(status["run"]["selected"], 1)
+        self.assertEqual(status["run"]["pages_verified"], 2)
+        self.assertEqual(status["state"], "completed")
+        self.assertIsNone(status["current"])
+        before = (self.output / "ocr_status.json").read_bytes()
+        with patch("gpu_ocr_pdf.requests.get") as get:
+            self.assertEqual(self.run_ocr("--status"), 0)
+            get.assert_not_called()
+        self.assertEqual(self.calls, 2)
+        self.assertIn("-- FG OCR STATUS --", self.console.getvalue())
+        self.assertEqual((self.output / "ocr_status.json").read_bytes(), before)
+        self.assertEqual(self.run_ocr(), 0)
+        self.assertEqual(self.read_status()["counts"]["done"], 2)
+        self.assertEqual(self.read_status()["run"]["skipped"], 1)
+        self.assertEqual(self.calls, 3)
+
+    def test_count_status_before_first_run_and_watch_without_gpu(self):
+        make_pdf(self.source / "one.pdf")
+        make_pdf(self.source / "two.PDF")
+        with patch("gpu_ocr_pdf.requests.get") as get:
+            self.assertEqual(self.run_ocr("--status"), 0)
+            get.assert_not_called()
+        self.assertFalse(self.output.exists())
+        self.assertIn("NOT STARTED", self.console.getvalue())
+        self.assertEqual(self.calls, 0)
+        with patch("gpu_ocr_pdf.time.sleep", side_effect=KeyboardInterrupt), patch("gpu_ocr_pdf.requests.get") as get:
+            self.assertEqual(self.run_ocr("--watch", "1"), 0)
+            get.assert_not_called()
+        self.assertFalse(self.output.exists())
+
+    def test_changed_source_and_missing_output_are_pending_in_status(self):
+        path = self.source / "scan.pdf"
+        make_pdf(path)
+        self.assertEqual(self.run_ocr(), 0)
+        default_config = self.read_status()["ocr_config"]
+        path.write_bytes(path.read_bytes() + b"\n")
+        status = ocr.status_snapshot(self.source, self.output, [path], default_config, ocr.TEXT_LAYER_VERSION)
+        self.assertEqual(status["counts"]["done"], 0)
+        self.assertEqual(status["counts"]["pending"], 1)
+        self.assertEqual(self.run_ocr(), 0)
+        (self.output / "scan.pdf").unlink()
+        status = ocr.status_snapshot(self.source, self.output, [path], default_config, ocr.TEXT_LAYER_VERSION)
+        self.assertEqual(status["counts"]["pending"], 1)
+
+    def test_tracker_persists_current_page_while_waiting(self):
+        path = self.source / "scan.pdf"
+        make_pdf(path, 2)
+        config = {"base_url": self.base, "model": "ocr-primary", "version": ocr.CACHE_VERSION}
+        tracker = ocr.OCRTracker(self.source, self.output, [path], config, ocr.TEXT_LAYER_VERSION, 1)
+        tracker.begin(Path("scan.pdf"), 1)
+        tracker.page(1, 2, "waiting for GPU OCR")
+        status = self.read_status()
+        self.assertEqual(status["current"]["file"], "scan.pdf")
+        self.assertEqual(status["current"]["page"], 1)
+        self.assertEqual(status["current"]["total_pages"], 2)
+        self.assertEqual(status["current"]["stage"], "waiting for GPU OCR")
+        self.assertEqual(status["counts"]["pending"], 1)
+
+    def test_gpu_unavailable_is_tracked_without_marking_all_pdfs_failed(self):
+        make_pdf(self.source / "scan.pdf")
+        with patch("gpu_ocr_pdf.GPUClient.check", side_effect=ValueError("GPU offline")):
+            self.assertEqual(self.run_ocr(), 2)
+        status = self.read_status()
+        self.assertEqual(status["state"], "gpu_unavailable")
+        self.assertEqual(status["gpu_state"], "unavailable")
+        self.assertEqual(status["counts"], {"total": 1, "done": 0, "failed": 0, "pending": 1})
+
+    def test_latest_failures_persist_outside_a_limited_run(self):
+        make_pdf(self.source / "a.pdf")
+        make_pdf(self.source / "b.pdf")
+        self.fail_on = 2
+        self.assertEqual(self.run_ocr(), 1)
+        self.assertEqual(self.read_status()["counts"], {"total": 2, "done": 1, "failed": 1, "pending": 0})
+        self.fail_on = None
+        self.assertEqual(self.run_ocr("--limit", "1"), 0)
+        self.assertEqual(self.read_status()["counts"]["failed"], 1)
+        self.assertEqual(self.run_ocr(), 0)
+        self.assertEqual(self.read_status()["counts"]["failed"], 0)
 
 
 class OCRResponseTests(unittest.TestCase):

@@ -59,6 +59,69 @@ python core/gpu_ocr_pdf.py finance_cg_data --limit 1 --workers 1
 python core/gpu_ocr_pdf.py finance_cg_data --workers 2
 ```
 
+## Count and track FG OCR
+
+The script recursively counts **all** source PDFs at startup. `--limit 1`
+selects one PDF to process; the total still includes the full corpus. A status
+panel prints at startup and after each PDF, and progress is saved before waiting
+for GPU inference and after verifying each page.
+
+To count PDFs and check status at any time, including before your first OCR run:
+
+```bash
+python core/gpu_ocr_pdf.py finance_cg_data --status
+```
+
+During OCR, open another terminal in the same project and virtual environment:
+
+```bash
+# Refresh the status panel every 3 seconds. Ctrl+C stops only this watcher.
+python core/gpu_ocr_pdf.py finance_cg_data --watch
+
+# Optional: choose a refresh interval in seconds.
+python core/gpu_ocr_pdf.py finance_cg_data --watch 5
+```
+
+For custom output roots, pass the same `-o` to both the OCR and status commands.
+The status commands make no GPU requests and do not write or modify results.
+They recount the source PDFs and validate completion records using the last
+run's OCR settings. A terminal watch refreshes the screen; redirected watch
+output produces successive plain-text snapshots.
+
+Example display (illustrative numbers):
+
+```text
+-- FG OCR STATUS --
+Corpus   PDFs present   OCR done   OCR failed    Pending
+fg               5058        542            2       4514
+Progress: [###---------------------------] 10.7%
+Last run: RUNNING
+This run: selected 5058 | checked 12 | newly done 10 | already done 0 | failed 2
+Pages verified this run: 31 (cached: 4)
+Current PDF [13/5058]: 02_Rules_And_Act/1982/Amend_2002.pdf
+Current page: 2/7 | waiting for GPU OCR
+GPU API: http://127.0.0.1:8000/v1 | last check: ready
+Elapsed: 00:18:42 | Free disk: 1823.0 GiB
+```
+
+- **PDFs present:** every PDF currently found recursively under the FG input.
+- **OCR done:** completed PDFs whose source, configuration, PDF writer version,
+  output PDF size/mtime and required sidecars still match the completion record.
+- **OCR failed:** PDFs with a current tracked failure. Successful retries clear
+  that failure count. The append-only `errors.jsonl` remains a history.
+- **Pending:** PDFs still to finish, including the one currently in progress.
+  `done + failed + pending` equals the total. Changed sources or missing outputs
+  return to pending. Previous results that need a writer upgrade also do so.
+- **This run:** counts for the current selection, separate from corpus totals.
+  Completing a limited run does not mean the whole corpus has finished.
+- **GPU API:** the result of the last endpoint check, with its UTC timestamp;
+  this does not measure GPU memory or utilization on the other VM.
+
+`finance_cg_data_ocr/ocr_status.json` is a machine-readable snapshot. Per-document
+`progress.json` records live in `.ocr-cache/<document-hash>/`. On Linux, the
+watcher identifies an OCR process that exited without updating its checkpoint.
+Rerun OCR to resume; watching never starts or stops an OCR job.
+
 For long runs, use a persistent terminal such as tmux. Logs can be redirected:
 
 ```bash
