@@ -37,6 +37,7 @@ node_modules/
 *.PDF.ocr.md
 errors.jsonl
 ocr_status.json
+/diagnostics/fg-vm-*.json
 
 # Runtime data and temporary pipeline outputs.
 /data/

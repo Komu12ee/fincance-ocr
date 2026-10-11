@@ -223,3 +223,38 @@ a different cache configuration; reuse the same settings when resuming.
 
 The code uses PyMuPDF's [invisible text rendering mode](https://pymupdf.readthedocs.io/en/latest/textwriter.html)
 for the searchable layer.
+
+## Share FG VM diagnostics through GitHub
+
+From the processing VM, with the OCR environment activated and GPU tunnel open:
+
+```bash
+git pull --ff-only origin main
+python core/fg_vm_diagnostics.py finance_cg_data --probe --push
+```
+
+This collects package versions, the checked-out commit, FG PDF counts, recent
+OCR errors, status and model metadata. `--probe` sends the first PDF's first
+page to the configured GPU once with the last run's rendering/token settings
+(or defaults before the first run). It records the server's full rejection
+reason without uploading the page or resulting OCR text to GitHub. It uses
+the default OCR prompt; a job's custom `--prompt-file` is not reproduced.
+Neither collection nor the probe changes existing OCR outputs or page caches.
+This probe can take up to 180 seconds of read time; keep the terminal open.
+
+`--push` commits only the generated report to a new `fg-ocr-diagnostics-*`
+branch using an isolated temporary Git checkout. Your current VM branch,
+staged changes and `main` are untouched. GitHub authentication uses the same
+`origin` URL and SSH configuration as your existing repository; write access
+is required. No force push is used. If upload fails, the local report remains.
+The script prints the uploaded branch name and link. Share that link in chat
+so the report can be fetched and inspected.
+
+Reports contain document filenames and error messages. They exclude source
+PDFs, OCR transcripts, full text-layer diagnostics, arbitrary VM logs, `.env`
+contents and credentials. API keys and common token patterns in messages are
+redacted. Run without `--push` to inspect a local report first, and omit
+`--probe` to collect existing errors without invoking GPU inference. Local
+reports under `diagnostics/fg-vm-*.json` are ignored by Git; only this script's
+explicit upload stages the single report. For a custom OCR output directory,
+pass the matching `-o /path/to/output`.
