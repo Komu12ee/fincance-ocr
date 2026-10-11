@@ -61,6 +61,27 @@ python core/gpu_ocr_pdf.py finance_cg_data --workers 2
 
 ## Count and track FG OCR
 
+### Short commands on the GPU VM
+
+When the repository and FG PDFs are on the GPU VM and its API listens on
+`127.0.0.1:8001`, the bundled text prompt avoids creating a prompt file manually.
+Activate your OCR environment, then type these commands from the repository:
+
+```bash
+git pull --ff-only origin main
+python core/run_fg_ocr.py --limit 1
+# After the test succeeds, process all FG PDFs:
+python core/run_fg_ocr.py
+# From another activated terminal, watch progress:
+python core/run_fg_ocr.py --watch
+```
+
+The short command selects `ocr-primary`, one worker, a 300-second timeout and
+`core/fg_ocr_prompt.txt`. It defaults to `finance_cg_data`, with output in
+`finance_cg_data_ocr`. Plain-text OCR preserves search and bookmarks, but text
+selection/highlight positions are approximate. All existing CLI options remain
+available, including a different `--base-url` or `--prompt-file`.
+
 The script recursively counts **all** source PDFs at startup. `--limit 1`
 selects one PDF to process; the total still includes the full corpus. A status
 panel prints at startup and after each PDF, and progress is saved before waiting

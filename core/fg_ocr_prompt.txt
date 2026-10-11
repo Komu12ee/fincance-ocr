@@ -1,0 +1,5 @@
+Transcribe ALL visible text in reading order, including headers, footers, tables,
+stamps and handwriting when readable. Preserve Hindi and English exactly.
+Do not translate, summarize, explain, or invent missing text.
+Return only the transcription, without JSON or Markdown fences.
+For a truly blank page return {"blank":true,"lines":[]}.
